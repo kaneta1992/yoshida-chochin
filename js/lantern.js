@@ -198,11 +198,7 @@ export function buildLantern(textures) {
   clamp.position.set(-CAP_R_BOT * 0.98, 0.028, 0);
   group.add(clamp);
 
-  // ---------- 蝋燭の光源(夜) ----------
-  const candle = new THREE.PointLight(0xffa245, 0.0, 1.15, 2.0);
-  candle.position.set(0, CAP_H_BOT + BODY_H * 0.42, 0);
-  candle.name = 'candle';
-  group.add(candle);
-
-  return { group, body, bodyMat, candle };
+  // 蝋燭はポイントライトではなくエミッシブ+地面の発光ディスクで表現する
+  // (実光源はフォトグラメトリメッシュの微細な穴から漏れて輝点になるため)
+  return { group, body, bodyMat };
 }

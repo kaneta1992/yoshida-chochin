@@ -38,8 +38,12 @@ for (const mesh of doc.getRoot().listMeshes()) {
       const cz = (pos[a * 3 + 2] + pos[b * 3 + 2] + pos[c * 3 + 2]) / 3;
       const r = Math.hypot(cx, cz);
       const inAz = cz > 0.2 && Math.abs(cx) < cz * 0.47;
-      const del = inAz && cy > 0.20 && cy < 0.62 && r > rBody(cy) + 0.028;
-      if (del) totalRemoved++;
+      const delStrip = inAz && cy > 0.20 && cy < 0.62 && r > rBody(cy) + 0.028;
+      // 帯の付け根の「つの」: az 0°±7°, 肩上端の corner から立ち上がる残骸
+      const azDeg = Math.abs(Math.atan2(cx, cz) * 180 / Math.PI);
+      const delHorn = cz > 0 && azDeg < 7 && cy > 0.502 && cy < 0.63 &&
+        r > Math.max(0.26, 0.29 - (cy - 0.505) * 0.8);
+      if (delStrip || delHorn) totalRemoved++;
       else keep.push(a, b, c);
     }
     idxAccessor.setArray(keep.length > 65535 ? new Uint32Array(keep) : new Uint16Array(keep));

@@ -161,8 +161,30 @@ class App {
     });
     const ground = new THREE.Mesh(new THREE.CircleGeometry(8, 48), this.groundMat);
     ground.rotation.x = -Math.PI / 2;
-    ground.layers.enable(1); // 蝋燭光(レイヤー1)を受ける
     this.scene.add(ground);
+
+    // 夜の灯だまり(加算ブレンドの発光ディスク。実光源は使わない)
+    const glowCanvas = document.createElement('canvas');
+    glowCanvas.width = glowCanvas.height = 256;
+    const gctx = glowCanvas.getContext('2d');
+    const gg = gctx.createRadialGradient(128, 128, 6, 128, 128, 126);
+    gg.addColorStop(0, 'rgba(255,166,80,0.95)');
+    gg.addColorStop(0.35, 'rgba(224,120,40,0.5)');
+    gg.addColorStop(1, 'rgba(160,70,20,0)');
+    gctx.fillStyle = gg;
+    gctx.fillRect(0, 0, 256, 256);
+    const glowTex = new THREE.CanvasTexture(glowCanvas);
+    glowTex.colorSpace = THREE.SRGBColorSpace;
+    this.glowPool = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 1.1),
+      new THREE.MeshBasicMaterial({
+        map: glowTex, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      })
+    );
+    this.glowPool.rotation.x = -Math.PI / 2;
+    this.glowPool.position.y = 0.004;
+    this.scene.add(this.glowPool);
 
     // 接地影(ブロブシャドウ)
     const shCanvas = document.createElement('canvas');
@@ -194,13 +216,9 @@ class App {
 
     // 提灯(プロシージャル版。GLB があれば後で差し替え)
     this.textures = new LanternTextures();
-    const { group, body, bodyMat, candle } = buildLantern(this.textures);
+    const { group, body, bodyMat } = buildLantern(this.textures);
     this.body = body;
     this.bodyMat = bodyMat;
-    this.candle = candle;
-    // 蝋燭光は地面の灯だまり専用(メッシュのピンホール光漏れを防ぐ)
-    this.candle.layers.set(1);
-    this.camera.layers.enable(1);
     this.lanternGroup = group;
 
     this.swayPivot = new THREE.Group();
@@ -264,8 +282,8 @@ class App {
     });
     if (!bodyMesh) return;
 
-    // 既存のプロシージャル形状を除去(蝋燭・デカールは残す)
-    const keep = new Set([this.candle, ...this.decalMeshes.values()]);
+    // 既存のプロシージャル形状を除去(デカールは残す)
+    const keep = new Set([...this.decalMeshes.values()]);
     for (const child of [...this.lanternGroup.children]) {
       if (keep.has(child)) continue;
       this.lanternGroup.remove(child);
@@ -275,19 +293,16 @@ class App {
     }
     this.lanternGroup.add(root);
 
-    // 夜の発光: ベースカラーをエミッシブに流用(墨は光を通さない)
+    // 夜の発光: GLB内蔵のエミッシブ(墨を黒マスク済み)を優先し、
+    // 無ければベースカラーを流用
     const mat = bodyMesh.material;
     mat.emissive = new THREE.Color(0xffb066);
-    mat.emissiveMap = mat.map;
+    if (!mat.emissiveMap) mat.emissiveMap = mat.map;
     mat.emissiveIntensity = 0;
     mat.envMapIntensity = 0.9;
-    // フォトグラメトリ由来のノイズ除去: ノーマル/ラフネス/メタルネスマップは
-    // ひび割れ状のアーティファクトになるため使わない(形状は300kポリゴンが担う)
+    // ノーマルマップはフォトグラメトリノイズ源のため常に無効
+    // (ラフネス等は tools/fix_textures.mjs で焼き直したものをそのまま使う)
     mat.normalMap = null;
-    mat.roughnessMap = null;
-    mat.metalnessMap = null;
-    mat.roughness = 0.7;
-    mat.metalness = 0.0;
     mat.needsUpdate = true;
 
     this.body = bodyMesh;
@@ -710,9 +725,7 @@ class App {
 
     const emiss = m * (1.45 + 0.22 * flick);
     this.bodyMat.emissiveIntensity = emiss;
-    this.candle.intensity = m * (0.95 + 0.3 * flick);
-    this.candle.position.x = 0.006 * Math.sin(t * 7.1);
-    this.candle.position.z = 0.006 * Math.cos(t * 6.3);
+    this.glowPool.material.opacity = m * (0.36 + 0.07 * flick);
 
     // デカールも紙と一緒に光る + 選択中はわずかに明滅
     for (const [id, mesh] of this.decalMeshes) {
