@@ -19,9 +19,11 @@ await doc.transform(
 for (const mesh of doc.getRoot().listMeshes()) {
   for (const prim of mesh.listPrimitives()) {
     prim.setMaterial(null);
-    // 位置と法線以外の頂点属性も落とす
+    // 位置・法線・UV(デカールの墨マスク参照に必要)以外の頂点属性を落とす
     for (const sem of prim.listSemantics()) {
-      if (sem !== 'POSITION' && sem !== 'NORMAL') prim.setAttribute(sem, null);
+      if (sem !== 'POSITION' && sem !== 'NORMAL' && sem !== 'TEXCOORD_0') {
+        prim.setAttribute(sem, null);
+      }
     }
   }
 }

@@ -474,6 +474,114 @@ class App {
     }
   }
 
+  // 三角形の空間グリッド(デカール頂点 → 本体UVの対応付けに使用)
+  getTriGrid(mesh) {
+    if (mesh.userData.triGrid) return mesh.userData.triGrid;
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const uv = geo.attributes.uv;
+    if (!uv) return null;
+    const idx = geo.index;
+    const cell = 0.03;
+    const map = new Map();
+    const triCount = idx ? idx.count / 3 : pos.count / 3;
+    const getI = (t, k) => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
+    for (let t = 0; t < triCount; t++) {
+      let minX = 1e9, minY = 1e9, minZ = 1e9, maxX = -1e9, maxY = -1e9, maxZ = -1e9;
+      for (let k = 0; k < 3; k++) {
+        const i = getI(t, k);
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      }
+      for (let ix = Math.floor(minX / cell); ix <= Math.floor(maxX / cell); ix++) {
+        for (let iy = Math.floor(minY / cell); iy <= Math.floor(maxY / cell); iy++) {
+          for (let iz = Math.floor(minZ / cell); iz <= Math.floor(maxZ / cell); iz++) {
+            const key = `${ix},${iy},${iz}`;
+            let arr = map.get(key);
+            if (!arr) { arr = []; map.set(key, arr); }
+            arr.push(t);
+          }
+        }
+      }
+    }
+    const grid = { cell, map, pos, uv, getI };
+    mesh.userData.triGrid = grid;
+    return grid;
+  }
+
+  // デカール各頂点に本体メッシュのUVを対応付ける(墨マスク参照用)。
+  // 重要: デカール三角形ごとに「同一の」ソース三角形からUVを外挿する。
+  // 頂点ごとに最近傍を探すと、隣接頂点が別々のUVアトラス島に対応してしまい、
+  // 三角形内の補間がテクスチャ全域を横切ってひび状のノイズになる。
+  assignBodyUV(geo, targetMesh) {
+    const grid = this.getTriGrid(targetMesh);
+    if (!grid) return;
+    const pAttr = geo.attributes.position;
+    const out = new Float32Array(pAttr.count * 2);
+    const p = new THREE.Vector3();
+    const centroid = new THREE.Vector3();
+    const tri = new THREE.Triangle();
+    const cp = new THREE.Vector3();
+    const uvA = new THREE.Vector2(), uvB = new THREE.Vector2(), uvC = new THREE.Vector2();
+    const res = new THREE.Vector2();
+    const verts = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+
+    // DecalGeometry は非インデックスで 3 頂点 = 1 三角形
+    for (let t0 = 0; t0 < pAttr.count; t0 += 3) {
+      centroid.set(0, 0, 0);
+      for (let k = 0; k < 3; k++) {
+        verts[k].fromBufferAttribute(pAttr, t0 + k); // ワールド(rest)座標
+        targetMesh.worldToLocal(verts[k]);
+        centroid.add(verts[k]);
+      }
+      centroid.multiplyScalar(1 / 3);
+
+      // 重心の最近傍ソース三角形を1つ選ぶ
+      const cx = Math.floor(centroid.x / grid.cell);
+      const cy = Math.floor(centroid.y / grid.cell);
+      const cz = Math.floor(centroid.z / grid.cell);
+      let bestD = Infinity, bestT = -1;
+      for (let ring = 0; ring <= 1 && bestT < 0; ring++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          for (let dy = -ring; dy <= ring; dy++) {
+            for (let dz = -ring; dz <= ring; dz++) {
+              if (ring === 1 && Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) < 1) continue;
+              const arr = grid.map.get(`${cx + dx},${cy + dy},${cz + dz}`);
+              if (!arr) continue;
+              for (const t of arr) {
+                const ia = grid.getI(t, 0), ib = grid.getI(t, 1), ic = grid.getI(t, 2);
+                tri.a.fromBufferAttribute(grid.pos, ia);
+                tri.b.fromBufferAttribute(grid.pos, ib);
+                tri.c.fromBufferAttribute(grid.pos, ic);
+                tri.closestPointToPoint(centroid, cp);
+                const dd = cp.distanceToSquared(centroid);
+                if (dd < bestD) { bestD = dd; bestT = t; }
+              }
+            }
+          }
+        }
+      }
+      if (bestT < 0) continue;
+
+      // 選んだソース三角形の平面上で3頂点それぞれのUVを外挿
+      const ia = grid.getI(bestT, 0), ib = grid.getI(bestT, 1), ic = grid.getI(bestT, 2);
+      tri.a.fromBufferAttribute(grid.pos, ia);
+      tri.b.fromBufferAttribute(grid.pos, ib);
+      tri.c.fromBufferAttribute(grid.pos, ic);
+      uvA.fromBufferAttribute(grid.uv, ia);
+      uvB.fromBufferAttribute(grid.uv, ib);
+      uvC.fromBufferAttribute(grid.uv, ic);
+      for (let k = 0; k < 3; k++) {
+        THREE.Triangle.getInterpolation(verts[k], tri.a, tri.b, tri.c, uvA, uvB, uvC, res);
+        out[(t0 + k) * 2] = res.x;
+        out[(t0 + k) * 2 + 1] = res.y;
+      }
+    }
+    geo.setAttribute('uvBody', new THREE.Float32BufferAttribute(out, 2));
+  }
+
   // final=true: 本体メッシュへ投影(高品質・確定時)
   // final=false: 軽量プロキシへ投影(ドラッグ中のプレビュー)
   buildDecalMesh(d, final = true) {
@@ -509,9 +617,13 @@ class App {
         );
       }
 
+      // 「墨の下」モードは本体UVを対応付けて墨マスクを参照できるようにする
+      if (d.under) this.assignBodyUV(geo, target);
+
       let mesh = this.decalMeshes.get(d.id);
-      if (mesh && mesh.userData.under !== !!d.under) {
-        // 重なりモードが変わった → マテリアルを作り直す
+      if (mesh && (mesh.userData.under !== !!d.under || d.under)) {
+        // モード変更時と「下」モードは毎回マテリアルを作り直す
+        // (墨マスクのuniformを現在の本体テクスチャに揃えるため)
         mesh.material.map?.dispose();
         mesh.material.dispose();
         mesh.material = this.makeDecalMaterial(d, img);
@@ -545,7 +657,7 @@ class App {
   makeDecalMaterial(d, img) {
     if (d.under) {
       const tex = this.makeUnderTexture(d, img);
-      return new THREE.MeshBasicMaterial({
+      const mat = new THREE.MeshBasicMaterial({
         map: tex,
         blending: THREE.MultiplyBlending,
         transparent: true,
@@ -554,6 +666,22 @@ class App {
         polygonOffsetFactor: -4,
         toneMapped: false, // 乗算係数にトーンマッピングを掛けない
       });
+      // 本体の墨マスク(エミッシブ=墨が黒)を参照し、墨の上では乗算係数を
+      // 1(=無効果)へ寄せる → 墨に完全に覆われ、透けない
+      const inkMask = this.bodyMat.emissiveMap || this.bodyMat.map;
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.inkMask = { value: inkMask };
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', 'attribute vec2 uvBody;\nvarying vec2 vUvBody;\n#include <common>')
+          .replace('#include <uv_vertex>', '#include <uv_vertex>\nvUvBody = uvBody;');
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', 'uniform sampler2D inkMask;\nvarying vec2 vUvBody;\n#include <common>')
+          .replace('#include <map_fragment>', `#include <map_fragment>
+            vec3 inkTex = texture2D( inkMask, vUvBody ).rgb;
+            float paper = smoothstep( 0.012, 0.05, dot( inkTex, vec3( 0.333 ) ) );
+            diffuseColor.rgb = mix( vec3( 1.0 ), diffuseColor.rgb, paper );`);
+      };
+      return mat;
     }
     const tex = new THREE.Texture(img);
     tex.colorSpace = THREE.SRGBColorSpace;

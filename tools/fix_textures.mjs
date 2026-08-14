@@ -286,10 +286,12 @@ for (const mat of doc.getRoot().listMaterials()) {
       }
     }
   }
-  const emisJpg = await emis.quality(90).getBufferAsync(Jimp.MIME_JPEG);
+  // PNG(可逆)で保存: JPEG圧縮ノイズがあると墨内部が完全な黒にならず、
+  // デカールの墨マスク判定が誤動作する
+  const emisPng = await emis.getBufferAsync(Jimp.MIME_PNG);
   const emisTex = doc.createTexture('emissive')
-    .setImage(new Uint8Array(emisJpg))
-    .setMimeType('image/jpeg');
+    .setImage(new Uint8Array(emisPng))
+    .setMimeType('image/png');
   mat.setEmissiveTexture(emisTex).setEmissiveFactor([1, 1, 1]);
 
   // --- 5. ノーマルマップ除去 ---
