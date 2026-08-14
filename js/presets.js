@@ -18,7 +18,7 @@ export function captureState(app) {
     decals: app.state.decals.map((d) => ({
       id: d.id, name: d.name, image: d.image,
       pos: d.pos.toArray(), normal: d.normal.toArray(),
-      roll: d.roll, size: d.size, opacity: d.opacity,
+      roll: d.roll, size: d.size, opacity: d.opacity, under: !!d.under,
     })),
   };
 }
@@ -35,6 +35,7 @@ export async function applyState(app, data) {
       pos: new Vector3().fromArray(d.pos),
       normal: new Vector3().fromArray(d.normal),
       roll: d.roll || 0, size: d.size || 0.12, opacity: d.opacity ?? 1,
+      under: !!d.under,
     });
   }
   app.rebuildAllDecals();

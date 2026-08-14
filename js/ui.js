@@ -96,6 +96,12 @@ export class UI {
       }
     });
 
+    this.$('#dLayer').querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => {
+        this.$('#dLayer').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+        this.app.updateSelectedDecal({ under: b.dataset.l === 'under' });
+      });
+    });
     this.$('#dScale').addEventListener('input', (e) => {
       this.app.updateSelectedDecal({ size: parseFloat(e.target.value) });
     });
@@ -136,6 +142,9 @@ export class UI {
       this.$('#dScale').value = sel.size;
       this.$('#dRot').value = sel.roll;
       this.$('#dOpacity').value = sel.opacity;
+      this.$('#dLayer').querySelectorAll('button').forEach((b) => {
+        b.classList.toggle('active', (b.dataset.l === 'under') === !!sel.under);
+      });
     }
     this.updatePanelShift();
   }

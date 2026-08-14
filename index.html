@@ -108,6 +108,13 @@
     </div>
     <ul id="decalList" class="decal-list"></ul>
     <div id="decalEditor" class="decal-editor" hidden>
+      <div class="row">
+        <span>重なり</span>
+        <div class="seg" id="dLayer">
+          <button data-l="over" class="active">墨の上</button>
+          <button data-l="under">墨の下</button>
+        </div>
+      </div>
       <div class="slider-row">
         <span>サイズ</span>
         <input type="range" id="dScale" min="0.03" max="0.34" step="0.005" value="0.12">

@@ -444,6 +444,7 @@ class App {
       pos: new THREE.Vector3(0, TOTAL_H * 0.55, BODY_R),
       normal: new THREE.Vector3(0, 0, 1),
       roll: 0, size: 0.12, opacity: 1,
+      under: false, // true = 墨の下(和紙に直接印刷された見た目)
     };
     if (hit) this.hitToLocal(hit, d);
     this.state.decals.push(d);
@@ -509,6 +510,13 @@ class App {
       }
 
       let mesh = this.decalMeshes.get(d.id);
+      if (mesh && mesh.userData.under !== !!d.under) {
+        // 重なりモードが変わった → マテリアルを作り直す
+        mesh.material.map?.dispose();
+        mesh.material.dispose();
+        mesh.material = this.makeDecalMaterial(d, img);
+        mesh.userData.under = !!d.under;
+      }
       if (mesh) {
         mesh.geometry.dispose();
         mesh.geometry = geo;
@@ -519,26 +527,10 @@ class App {
         mesh.scale.setScalar(1);
         mesh.updateMatrixWorld(true);
         this.lanternGroup.attach(mesh);
-        mesh.material.opacity = d.opacity;
+        if (!d.under) mesh.material.opacity = d.opacity;
       } else {
-        const tex = new THREE.Texture(img);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 4;
-        tex.needsUpdate = true;
-        const mat = new THREE.MeshStandardMaterial({
-          map: tex,
-          emissive: new THREE.Color(0xffb066),
-          emissiveMap: tex,
-          emissiveIntensity: 0,
-          transparent: true,
-          opacity: d.opacity,
-          depthWrite: false,
-          polygonOffset: true,
-          polygonOffsetFactor: -4,
-          roughness: 0.62,
-          metalness: 0,
-        });
-        mesh = new THREE.Mesh(geo, mat);
+        mesh = new THREE.Mesh(geo, this.makeDecalMaterial(d, img));
+        mesh.userData.under = !!d.under;
         mesh.renderOrder = 2;
         this.scene.add(mesh);
         this.lanternGroup.attach(mesh);
@@ -547,14 +539,77 @@ class App {
     });
   }
 
-  // サイズ・回転・不透明度の編集(UI から)
+  // デカールのマテリアル生成
+  // 上(over): 通常合成 = 墨の上に貼ったシール
+  // 下(under): 乗算合成 = 和紙に直接印刷され、墨が上から覆う
+  makeDecalMaterial(d, img) {
+    if (d.under) {
+      const tex = this.makeUnderTexture(d, img);
+      return new THREE.MeshBasicMaterial({
+        map: tex,
+        blending: THREE.MultiplyBlending,
+        transparent: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        toneMapped: false, // 乗算係数にトーンマッピングを掛けない
+      });
+    }
+    const tex = new THREE.Texture(img);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    tex.needsUpdate = true;
+    return new THREE.MeshStandardMaterial({
+      map: tex,
+      emissive: new THREE.Color(0xffb066),
+      emissiveMap: tex,
+      emissiveIntensity: 0,
+      transparent: true,
+      opacity: d.opacity,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      roughness: 0.62,
+      metalness: 0,
+    });
+  }
+
+  // 乗算用テクスチャ: 白地に不透明度を掛けて合成(透明部=白=乗算で不変)
+  makeUnderTexture(d, img) {
+    const cv = document.createElement('canvas');
+    cv.width = img.width; cv.height = img.height;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.globalAlpha = d.opacity;
+    ctx.drawImage(img, 0, 0);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  }
+
+  // サイズ・回転・不透明度・重なりの編集(UI から)
   updateSelectedDecal(props) {
     const d = this.getSelectedDecal();
     if (!d) return;
     Object.assign(d, props);
     const mesh = this.decalMeshes.get(d.id);
+    if ('under' in props) {
+      // モード切替はマテリアル再生成が必要 → 即時に本体へ再投影
+      this.decalRebuildId = null;
+      this.buildDecalMesh(d, true);
+      return;
+    }
     if (mesh && 'opacity' in props && !('size' in props) && !('roll' in props)) {
-      mesh.material.opacity = d.opacity; // 不透明度だけなら再投影不要
+      if (d.under) {
+        // 乗算テクスチャは不透明度を白へのブレンドで表現するため再ベイク
+        mesh.material.map?.dispose();
+        mesh.material.map = this.makeUnderTexture(d, this.textures.images.get(d.id));
+        mesh.material.needsUpdate = true;
+      } else {
+        mesh.material.opacity = d.opacity;
+      }
       return;
     }
     this.requestDecalRebuild(d.id);
@@ -736,8 +791,9 @@ class App {
     this.bodyMat.emissiveIntensity = emiss;
     this.glowPool.material.opacity = m * (0.36 + 0.07 * flick);
 
-    // デカールも紙と一緒に光る + 選択中はわずかに明滅
+    // デカールも紙と一緒に光る + 選択中はわずかに明滅(乗算モードは対象外)
     for (const [id, mesh] of this.decalMeshes) {
+      if (mesh.userData.under) continue;
       mesh.material.emissiveIntensity = emiss * 0.9;
       const d = this.state.decals.find((x) => x.id === id);
       if (!d) continue;
