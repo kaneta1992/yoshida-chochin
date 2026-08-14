@@ -238,7 +238,9 @@ body.decal-dragging .panel {
 .btn.danger { background: rgba(200,69,44,0.16); border-color: rgba(200,69,44,0.4); color: #f0a091; }
 
 /* デカール */
-.decal-toolbar { display: flex; gap: 10px; margin-bottom: 12px; }
+.decal-toolbar { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.sample-btn { display: inline-flex; align-items: center; gap: 8px; }
+.sample-btn img { width: 22px; height: 22px; object-fit: contain; }
 .decal-list { list-style: none; display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
 .decal-item {
   width: 58px; height: 58px; border-radius: 12px;

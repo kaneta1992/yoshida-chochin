@@ -1,7 +1,7 @@
 // ============================================================
 // ui.js — DOM UI とアプリ状態のバインディング
 // ============================================================
-import * as P from './presets.js';
+import * as P from './presets.js?v=2026-08-15e';
 
 export class UI {
   constructor(app) {
@@ -92,7 +92,21 @@ export class UI {
         this.toast('提灯をドラッグして位置を調整できます');
       } catch (err) {
         console.error(err);
-        this.toast('画像を読み込めませんでした');
+        this.toast(err.message || '画像を読み込めませんでした');
+      }
+    });
+
+    // サンプル画像(桔梗紋)をワンクリックで追加
+    this.$('#decalSample').addEventListener('click', async () => {
+      try {
+        const blob = await (await fetch('assets/sample-mark.png')).blob();
+        const file = new File([blob], 'yoshida-mark.png', { type: 'image/png' });
+        await this.app.addDecal(file);
+        this.renderDecalList();
+        this.toast('桔梗紋を追加しました。ドラッグで位置を調整できます');
+      } catch (err) {
+        console.error(err);
+        this.toast(err.message || 'サンプルを読み込めませんでした');
       }
     });
 
@@ -205,6 +219,29 @@ export class UI {
     const ul = this.$('#presetList');
     const list = P.listPresets();
     ul.innerHTML = '';
+
+    // 組み込みサンプルプリセット(削除不可)
+    {
+      const li = document.createElement('li');
+      li.className = 'preset-item';
+      li.innerHTML = '<span class="p-name">桔梗紋(サンプル)</span><span class="p-date">組込</span>';
+      const apply = document.createElement('button');
+      apply.textContent = '適用';
+      apply.addEventListener('click', async () => {
+        try {
+          const data = await (await fetch('assets/sample-preset.json')).json();
+          await P.applyState(this.app, data);
+          this.renderDecalList();
+          this.toast('サンプルプリセットを適用しました');
+        } catch (err) {
+          console.error(err);
+          this.toast('サンプルを読み込めませんでした');
+        }
+      });
+      li.appendChild(apply);
+      ul.appendChild(li);
+    }
+
     if (list.length === 0) {
       const li = document.createElement('li');
       li.className = 'preset-empty';

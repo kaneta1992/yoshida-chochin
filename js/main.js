@@ -15,10 +15,12 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
-import { LanternTextures } from './textures.js';
-import { buildLantern, TOTAL_H, BODY_R } from './lantern.js';
-import { UI } from './ui.js';
-import { applyState, decodeShareHash } from './presets.js';
+// 注意: JS更新時は index.html の main.js の ?v= と、この4つの ?v= を揃えて上げる
+// (GitHub Pages のキャッシュでモジュールだけ古くなる事故を防ぐ)
+import { LanternTextures } from './textures.js?v=2026-08-15e';
+import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-15e';
+import { UI } from './ui.js?v=2026-08-15e';
+import { applyState, decodeShareHash } from './presets.js?v=2026-08-15e';
 
 // ---------- 色定義(昼 / 夜) ----------
 const SKY = {
