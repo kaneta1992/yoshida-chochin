@@ -54,6 +54,8 @@ class App {
     };
     this.modeT = 0;
     this.modeTarget = 0;
+    this.viewShift = 0;        // パネル表示中のビュー上方シフト(px)
+    this.viewShiftTarget = 0;
     this.decalMeshes = new Map();   // id -> Mesh
     this.decalRebuildId = null;     // 再投影待ちのデカールID
     this.lastDecalBuild = 0;
@@ -410,6 +412,11 @@ class App {
   setAutoRotate(on) { this.state.autoRotate = on; this.controls.autoRotate = on; }
   setSway(on) { this.state.sway = on; }
 
+  // パネル表示中は 3D ビューを上へずらして提灯が隠れないようにする
+  setPanelShift(panelHeightPx) {
+    this.viewShiftTarget = panelHeightPx / 2;
+  }
+
   resetCamera() {
     this.camera.position.set(0.32, TARGET_Y + 0.18, 1.18);
     this.controls.target.set(0, TARGET_Y, 0);
@@ -630,6 +637,7 @@ class App {
 
       this.dragging = true;
       this.controls.enabled = false;
+      document.body.classList.add('decal-dragging');
       el.setPointerCapture(e.pointerId);
       this.hitToLocal(hit, d);
       this.requestDecalRebuild(d.id);
@@ -650,6 +658,7 @@ class App {
       if (!this.dragging) return;
       this.dragging = false;
       this.controls.enabled = true;
+      document.body.classList.remove('decal-dragging');
       try { el.releasePointerCapture(e.pointerId); } catch { /* noop */ }
       // ドラッグ終了時は本体へ高品質投影で確定
       const d = this.getSelectedDecal();
@@ -753,6 +762,15 @@ class App {
       if (d) this.buildDecalMesh(d, false);
       this.decalRebuildId = null;
       this.lastDecalBuild = performance.now();
+    }
+
+    // パネル分のビューシフト(スムーズに追従)
+    this.viewShift += (this.viewShiftTarget - this.viewShift) * (1 - Math.exp(-dt * 8));
+    if (Math.abs(this.viewShift) > 0.5) {
+      const w = window.innerWidth, h = window.innerHeight;
+      this.camera.setViewOffset(w, h, 0, this.viewShift, w, h);
+    } else if (this.camera.view?.enabled) {
+      this.camera.clearViewOffset();
     }
 
     this.controls.update();

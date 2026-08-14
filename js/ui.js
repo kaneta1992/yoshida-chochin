@@ -21,6 +21,12 @@ export class UI {
     setTimeout(() => this.$('#hint')?.classList.add('gone'), 6000);
   }
 
+  // パネルの高さ変化(デカール選択など)に合わせてビューシフトを更新
+  updatePanelShift() {
+    const panel = this.$('#panel');
+    this.app.setPanelShift(this.activePanel && !panel.hidden ? panel.getBoundingClientRect().height : 0);
+  }
+
   toast(msg, ms = 2400) {
     const t = this.$('#toast');
     t.textContent = msg;
@@ -40,6 +46,7 @@ export class UI {
           panel.hidden = true;
           btn.classList.remove('active');
           this.app.state.decalTabOpen = false;
+          this.app.setPanelShift(0);
           return;
         }
         this.activePanel = name;
@@ -47,6 +54,7 @@ export class UI {
         document.querySelectorAll('.panel-page').forEach((p) => { p.hidden = p.dataset.page !== name; });
         panel.hidden = false;
         this.app.state.decalTabOpen = name === 'decal';
+        this.app.setPanelShift(panel.getBoundingClientRect().height);
         if (name === 'preset') this.renderPresetList();
         if (name !== 'decal' && this.app.state.selectedDecal) {
           this.app.selectDecal(null);
@@ -129,6 +137,7 @@ export class UI {
       this.$('#dRot').value = sel.roll;
       this.$('#dOpacity').value = sel.opacity;
     }
+    this.updatePanelShift();
   }
 
   // ---------- プリセット ----------

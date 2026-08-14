@@ -167,6 +167,13 @@ body.mode-night .mt-knob { transform: translateX(48px); background: linear-gradi
   animation: panelUp 0.35s cubic-bezier(0.22, 1.1, 0.36, 1);
 }
 @keyframes panelUp { from { transform: translate(-50%, 40px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+/* デカールのドラッグ中はパネルを透かして操作の邪魔をしない */
+body.decal-dragging .panel {
+  opacity: 0.12;
+  pointer-events: none;
+}
+.panel { transition: opacity 0.25s; }
+
 .panel-grip { display: flex; justify-content: center; padding: 4px 0 10px; }
 .panel-grip span { width: 42px; height: 4px; border-radius: 2px; background: rgba(240,234,217,0.22); }
 .panel-title {
