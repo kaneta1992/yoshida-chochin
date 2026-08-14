@@ -19,7 +19,7 @@ import { NodeIO } from '@gltf-transform/core';
 import { prune } from '@gltf-transform/functions';
 import Jimp from 'jimp';
 
-const [,, inPath, outPath] = process.argv;
+const [,, inPath, outPath, maskOutPath] = process.argv;
 
 const S = 512;          // 3D分類の作業解像度
 const R3D = 0.045;      // 3D近傍半径(モデルローカル単位。全高≈1.86)
@@ -278,70 +278,31 @@ for (const mat of doc.getRoot().listMaterials()) {
     .setRoughnessFactor(1.0)
     .setMetallicFactor(0.0);
 
-  // --- 4. エミッシブ(夜の透過光) ---
-  // 昼に実際表示される「JPEG再デコード後」の画像から同解像度で生成する。
-  // 輝度式・解像度・ミップが昼と揃うため footprint が一致する。
-  // αチャンネル = デカール用の意味マスク(1=紙 / 0=墨)。発光量とは分離する
-  const emis = await Jimp.read(Buffer.from(jpg));
-  const ed = emis.bitmap.data;
-  const eN = W * H;
+  // --- 4. エミッシブは生成しない(単一ソース設計) ---
+  // 夜の発光はランタイムで「ベースカラーそのもの」を emissiveMap に流用する。
+  // 同一テクスチャなので昼と夜の見た目が乖離することは原理的にない。
+  // (夜専用テクスチャの合成は、どう作っても昼と差が出るため全廃した)
 
-  // 先にガターを充填してから輝度・ディテールを計算する
-  // (未充填だと blur が別のUV島や黒ガターを混ぜる。covFull は保守的AND版 —
-  //  Opusレビュー: 最近傍1点の被覆誤判定が重篤暗線の28.4%を生んでいた)
-  padImageRGB(ed, covFull, W, H);
-
-  const eLum = new Uint8Array(eN);
-  for (let i = 0; i < eN; i++) {
-    eLum[i] = (ed[i * 4] * 0.299 + ed[i * 4 + 1] * 0.587 + ed[i * 4 + 2] * 0.114) | 0;
-  }
-
-  // 発光「レベル」は形態学的クロージング(細い暗線を埋める)後の輝度から作る。
-  // 重篤な暗線は墨縁1〜4pxの毛羽・細線で、smoothstep+pow が対比を2〜3倍に
-  // 拡大していた(Opusレビュー実測)。閉包は太い墨の形状を変えない
-  const R_SCRATCH = 3;
-  const eLumClean = morphU8(morphU8(eLum, W, H, R_SCRATCH, true), W, H, R_SCRATCH, false);
-
-  // 島境界から遠い「内部」マスク: 境界近傍では blur16(detail) が信用できない
-  const covE255 = Uint8Array.from(covFull, (v) => v * 255);
-  const interior = morphU8(covE255, W, H, 8, false);
-
-  const eDetailBg = boxBlurU8(eLum, W, H, 16);
-  const bgSampleFull = makeSampler(bg3d, W, H);
-  const CREAM = [222, 188, 146];
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      // 墨判定は「傷抜き輝度」— 太い墨・落款は昼と同一 footprint のまま、
-      // 墨縁の毛羽・擦り傷だけが夜に増幅されない
-      const t = smooth(eLumClean[i], 40, 96);
-      // 深い墨・漆ゾーン(3D近傍が暗い)では微細な擦り傷の部分発光を抑える
-      // (明るい傷はクロージングでは消えないため、ゾーン側で抑制する)
-      const zone = smooth(bgSampleFull(x, y), 58, 86);
-      const m = Math.pow(t, 0.7) * zone;
-      // 質感(和紙の畝・繊維)は元の輝度から。傷が消えた分は二重計上しない
-      let detail = eLum[i] / Math.max(20, eDetailBg[i]);
-      detail = Math.max(0.90, Math.min(1.10, detail));
-      const scratch = 1 - Math.min(1, (eLumClean[i] - eLum[i]) / 40);
-      detail = 1 + (detail - 1) * scratch;
-      if (interior[i] < 255) detail = 1; // 島境界近傍は detail 不使用
-      for (let c = 0; c < 3; c++) {
-        ed[i * 4 + c] = Math.min(255, CREAM[c] * detail * m);
-      }
-      // 意味マスク: 紙=255 / 墨=0(傷抜き輝度から。傷でデカールに穴を開けない)
-      ed[i * 4 + 3] = Math.round(smooth(eLumClean[i], 52, 74) * 255);
+  // --- 5. デカール用の墨マスクを別ファイルに出力 ---
+  // 修復済みアルベド(ガター充填+細線クロージング)から 1=紙 / 0=墨 を作る
+  if (maskOutPath) {
+    const mimg = await Jimp.read(Buffer.from(jpg));
+    const md2 = mimg.bitmap.data;
+    padImageRGB(md2, covFull, W, H);
+    const mLum = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) {
+      mLum[i] = (md2[i * 4] * 0.299 + md2[i * 4 + 1] * 0.587 + md2[i * 4 + 2] * 0.114) | 0;
     }
+    const mClean = morphU8(morphU8(mLum, W, H, 3, true), W, H, 3, false);
+    for (let i = 0; i < W * H; i++) {
+      const v = Math.round(smooth(mClean[i], 52, 74) * 255);
+      md2[i * 4] = v; md2[i * 4 + 1] = v; md2[i * 4 + 2] = v; md2[i * 4 + 3] = 255;
+    }
+    await mimg.resize(1024, Math.max(1, Math.round(1024 * H / W))).writeAsync(maskOutPath);
+    console.log('ink mask written:', maskOutPath);
   }
 
-  // PNG(可逆・RGBA)で保存: JPEG化するとマスクαが使えず、
-  // 圧縮ノイズで墨内部が完全な黒にならない
-  const emisPng = await emis.getBufferAsync(Jimp.MIME_PNG);
-  const emisTex = doc.createTexture('emissive')
-    .setImage(new Uint8Array(emisPng))
-    .setMimeType('image/png');
-  mat.setEmissiveTexture(emisTex).setEmissiveFactor([1, 1, 1]);
-
-  // --- 5. ノーマルマップ除去 ---
+  // --- 6. ノーマルマップ除去 ---
   mat.setNormalTexture(null);
 }
 

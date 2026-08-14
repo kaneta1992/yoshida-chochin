@@ -36,7 +36,7 @@ const TARGET_Y = HANG_GAP + TOTAL_H * 0.52;
 const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシージャル)
 const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに要調整)
 // モデル更新時は ASSET_VER を上げる(GitHub Pages のキャッシュ対策)
-const ASSET_VER = '2026-08-15b';
+const ASSET_VER = '2026-08-15c';
 const GLB_PATH = `assets/lantern.glb?v=${ASSET_VER}`;
 const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // デカール投影・レイキャスト用
 const DECAL_LIFT_FINAL = 0.0018; // 本体投影時に表面から浮かせる量
@@ -249,6 +249,12 @@ class App {
       const gltf = await loader.loadAsync(GLB_PATH);
       this.swapToGLB(gltf.scene);
       console.info('GLB model loaded');
+      // デカール用の墨マスク(1=紙/0=墨。任意)
+      new THREE.TextureLoader().load(`assets/inkmask.png?v=${ASSET_VER}`, (tex) => {
+        tex.colorSpace = THREE.NoColorSpace;
+        this.inkMaskTex = tex;
+        this.rebuildAllDecals();
+      }, undefined, () => { /* 無ければアルベド輝度で代用 */ });
       // デカール用プロキシ(高ポリゴンモデルの投影負荷対策・任意)
       try {
         const proxy = await loader.loadAsync(PROXY_PATH);
@@ -297,11 +303,12 @@ class App {
     }
     this.lanternGroup.add(root);
 
-    // 夜の発光: GLB内蔵のエミッシブ(墨を黒マスク済み)を優先し、
-    // 無ければベースカラーを流用
+    // 夜の発光 = 昼のベースカラーそのもの(単一ソース設計)。
+    // 同一テクスチャを emissiveMap に流用するため、昼と夜の見た目が
+    // 乖離することは原理的にない(墨は暗いままわずかに透け、紙は光る)
     const mat = bodyMesh.material;
     mat.emissive = new THREE.Color(0xffb066);
-    if (!mat.emissiveMap) mat.emissiveMap = mat.map;
+    mat.emissiveMap = mat.map;
     mat.emissiveIntensity = 0;
     mat.envMapIntensity = 0.9;
     // ノーマルマップはフォトグラメトリノイズ源のため常に無効
@@ -673,9 +680,9 @@ class App {
         polygonOffsetFactor: -4,
         toneMapped: false, // 乗算係数にトーンマッピングを掛けない
       });
-      // 本体の墨マスク(エミッシブ=墨が黒)を参照し、墨の上では乗算係数を
-      // 1(=無効果)へ寄せる → 墨に完全に覆われ、透けない
-      const inkMask = this.bodyMat.emissiveMap || this.bodyMat.map;
+      // 墨マスク(専用の inkmask.png: 白=紙/黒=墨。無ければアルベド輝度で代用)
+      // を参照し、墨の上では乗算係数を 1(=無効果)へ寄せる → 透けない
+      const inkMask = this.inkMaskTex || this.bodyMat.map;
       mat.onBeforeCompile = (shader) => {
         shader.uniforms.inkMask = { value: inkMask };
         shader.uniforms.uPulse = { value: 0 }; // 選択中の明滅(0=通常, 1=消灯)
@@ -685,15 +692,16 @@ class App {
         shader.fragmentShader = shader.fragmentShader
           .replace('#include <common>', 'uniform sampler2D inkMask;\nuniform float uPulse;\nvarying vec2 vUvBody;\nvarying float vUvValid;\n#include <common>')
           .replace('#include <map_fragment>', `#include <map_fragment>
-            // 意味マスクはエミッシブのαチャンネル(1=紙, 0=墨)。
-            // min 5タップで墨側へ保守的に膨張(細い筆線を消さない)
-            float o = 1.0 / 2048.0;
-            float aC = texture2D( inkMask, vUvBody ).a;
-            float aL = texture2D( inkMask, vUvBody + vec2( -o, 0.0 ) ).a;
-            float aR = texture2D( inkMask, vUvBody + vec2(  o, 0.0 ) ).a;
-            float aD = texture2D( inkMask, vUvBody + vec2( 0.0, -o ) ).a;
-            float aU = texture2D( inkMask, vUvBody + vec2( 0.0,  o ) ).a;
-            float paper = min( aC, min( min( aL, aR ), min( aD, aU ) ) );
+            // min 5タップで墨側へ保守的に膨張(細い筆線を消さない)。
+            // しきい値は専用マスク(0/1)とアルベド代用(紙≈0.5 linear)の両方で機能する
+            float o = 1.0 / 1024.0;
+            float mC = dot( texture2D( inkMask, vUvBody ).rgb, vec3( 0.333 ) );
+            float mL = dot( texture2D( inkMask, vUvBody + vec2( -o, 0.0 ) ).rgb, vec3( 0.333 ) );
+            float mR = dot( texture2D( inkMask, vUvBody + vec2(  o, 0.0 ) ).rgb, vec3( 0.333 ) );
+            float mD = dot( texture2D( inkMask, vUvBody + vec2( 0.0, -o ) ).rgb, vec3( 0.333 ) );
+            float mU = dot( texture2D( inkMask, vUvBody + vec2( 0.0,  o ) ).rgb, vec3( 0.333 ) );
+            float inkLum = min( mC, min( min( mL, mR ), min( mD, mU ) ) );
+            float paper = smoothstep( 0.10, 0.32, inkLum );
             // UV対応付けに失敗した三角形は隠す側に倒す
             paper *= step( 0.5, vUvValid );
             diffuseColor.rgb = mix( vec3( 1.0 ), diffuseColor.rgb, paper * ( 1.0 - uPulse ) );`);
