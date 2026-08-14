@@ -1,0 +1,12 @@
+# 参考写真(非公開)
+ref/
+
+# ローカル開発設定
+.claude/
+
+# テスト用一時ファイル
+assets/test-mark.png
+
+# OS
+Thumbs.db
+.DS_Store

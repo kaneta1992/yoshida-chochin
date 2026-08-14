@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d14">
+<title>吉田提灯 — 弓張提灯 3D ビューア</title>
+<meta name="description" content="弓張提灯を360°鑑賞できる高品質3Dビューア。昼夜切替・デカール・プリセット共有対応。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;600;700&family=Zen+Old+Mincho:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><ellipse cx='50' cy='52' rx='30' ry='38' fill='%23f3ecd9'/><rect x='34' y='8' width='32' height='10' rx='2' fill='%23111'/><rect x='34' y='84' width='32' height='10' rx='2' fill='%23111'/></svg>">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="loading">
+  <div class="loading-lantern">
+    <svg viewBox="0 0 100 140" width="72" height="100">
+      <rect x="32" y="6" width="36" height="12" rx="2" fill="#181818"/>
+      <ellipse cx="50" cy="70" rx="33" ry="46" fill="#f3ecd9"/>
+      <g stroke="#d8cfb6" stroke-width="1">
+        <path d="M18 50 Q50 44 82 50" fill="none"/>
+        <path d="M15 65 Q50 59 85 65" fill="none"/>
+        <path d="M15 80 Q50 74 85 80" fill="none"/>
+        <path d="M18 95 Q50 89 82 95" fill="none"/>
+      </g>
+      <path d="M38 52 Q60 58 52 72 Q44 84 62 88" stroke="#161616" stroke-width="9" fill="none" stroke-linecap="round"/>
+      <rect x="32" y="122" width="36" height="12" rx="2" fill="#181818"/>
+    </svg>
+    <div class="loading-glow"></div>
+  </div>
+  <div class="loading-title">吉田提灯</div>
+  <div class="loading-sub">灯を入れています…</div>
+</div>
+
+<canvas id="stage"></canvas>
+
+<header id="masthead">
+  <div class="brand">
+    <h1>吉田提灯</h1>
+    <p>YUMIHARI CHŌCHIN — 弓張提灯</p>
+  </div>
+  <button id="modeToggle" class="mode-toggle" aria-label="昼夜切替" title="昼夜切替">
+    <span class="mt-track">
+      <span class="mt-icon mt-sun">☀</span>
+      <span class="mt-icon mt-moon">🕯</span>
+      <span class="mt-knob"></span>
+    </span>
+  </button>
+</header>
+
+<div id="hint" class="hint">ドラッグで回転 · ピンチ／ホイールでズーム</div>
+
+<nav id="dock">
+  <button class="dock-btn active" data-panel="view"><span class="dock-ico">✥</span>表示</button>
+  <button class="dock-btn" data-panel="decal"><span class="dock-ico">✦</span>デカール</button>
+  <button class="dock-btn" data-panel="preset"><span class="dock-ico">⛃</span>プリセット</button>
+</nav>
+
+<section id="panel" class="panel" hidden>
+  <div class="panel-grip"><span></span></div>
+
+  <!-- 表示 -->
+  <div class="panel-page" data-page="view">
+    <h2 class="panel-title">表示設定</h2>
+    <label class="row switch-row">
+      <span>自動回転</span>
+      <input type="checkbox" id="optAutoRotate">
+      <span class="switch"></span>
+    </label>
+    <label class="row switch-row">
+      <span>吊り揺れ</span>
+      <input type="checkbox" id="optSway" checked>
+      <span class="switch"></span>
+    </label>
+    <label class="row switch-row">
+      <span>ブルーム（発光効果）</span>
+      <input type="checkbox" id="optBloom" checked>
+      <span class="switch"></span>
+    </label>
+    <div class="row">
+      <span>描画品質</span>
+      <div class="seg" id="segQuality">
+        <button data-q="low">軽量</button>
+        <button data-q="auto" class="active">自動</button>
+        <button data-q="high">高</button>
+      </div>
+    </div>
+    <button id="btnResetCam" class="btn ghost wide">カメラをリセット</button>
+  </div>
+
+  <!-- デカール -->
+  <div class="panel-page" data-page="decal" hidden>
+    <h2 class="panel-title">デカール</h2>
+    <p class="panel-note">画像を追加し、提灯をドラッグして位置を決めます。</p>
+    <div class="decal-toolbar">
+      <label class="btn accent" for="decalFile">＋ 画像を追加</label>
+      <input type="file" id="decalFile" accept="image/*" hidden>
+    </div>
+    <ul id="decalList" class="decal-list"></ul>
+    <div id="decalEditor" class="decal-editor" hidden>
+      <div class="slider-row">
+        <span>サイズ</span>
+        <input type="range" id="dScale" min="0.03" max="0.34" step="0.005" value="0.12">
+      </div>
+      <div class="slider-row">
+        <span>回転</span>
+        <input type="range" id="dRot" min="-180" max="180" step="1" value="0">
+      </div>
+      <div class="slider-row">
+        <span>不透明度</span>
+        <input type="range" id="dOpacity" min="0.05" max="1" step="0.01" value="1">
+      </div>
+      <button id="dDelete" class="btn danger wide">このデカールを削除</button>
+    </div>
+  </div>
+
+  <!-- プリセット -->
+  <div class="panel-page" data-page="preset" hidden>
+    <h2 class="panel-title">プリセット</h2>
+    <div class="preset-save">
+      <input type="text" id="presetName" placeholder="プリセット名" maxlength="24">
+      <button id="btnSavePreset" class="btn accent">保存</button>
+    </div>
+    <ul id="presetList" class="preset-list"></ul>
+    <div class="preset-io">
+      <button id="btnShare" class="btn ghost">共有リンクをコピー</button>
+      <button id="btnExport" class="btn ghost">書き出し</button>
+      <label class="btn ghost" for="importFile">読み込み</label>
+      <input type="file" id="importFile" accept="application/json" hidden>
+    </div>
+  </div>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
