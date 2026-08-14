@@ -520,6 +520,8 @@ class App {
     if (!grid) return;
     const pAttr = geo.attributes.position;
     const out = new Float32Array(pAttr.count * 2);
+    const valid = new Float32Array(pAttr.count); // 対応付けの信頼フラグ
+    const MAX_D2 = 0.03 * 0.03; // これ以上離れた対応付けは信用しない
     const p = new THREE.Vector3();
     const centroid = new THREE.Vector3();
     const tri = new THREE.Triangle();
@@ -573,13 +575,16 @@ class App {
       uvA.fromBufferAttribute(grid.uv, ia);
       uvB.fromBufferAttribute(grid.uv, ib);
       uvC.fromBufferAttribute(grid.uv, ic);
+      const ok = bestD < MAX_D2 ? 1 : 0;
       for (let k = 0; k < 3; k++) {
         THREE.Triangle.getInterpolation(verts[k], tri.a, tri.b, tri.c, uvA, uvB, uvC, res);
         out[(t0 + k) * 2] = res.x;
         out[(t0 + k) * 2 + 1] = res.y;
+        valid[t0 + k] = ok;
       }
     }
     geo.setAttribute('uvBody', new THREE.Float32BufferAttribute(out, 2));
+    geo.setAttribute('uvBodyValid', new THREE.Float32BufferAttribute(valid, 1));
   }
 
   // final=true: 本体メッシュへ投影(高品質・確定時)
@@ -673,19 +678,22 @@ class App {
         shader.uniforms.inkMask = { value: inkMask };
         shader.uniforms.uPulse = { value: 0 }; // 選択中の明滅(0=通常, 1=消灯)
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', 'attribute vec2 uvBody;\nvarying vec2 vUvBody;\n#include <common>')
-          .replace('#include <uv_vertex>', '#include <uv_vertex>\nvUvBody = uvBody;');
+          .replace('#include <common>', 'attribute vec2 uvBody;\nattribute float uvBodyValid;\nvarying vec2 vUvBody;\nvarying float vUvValid;\n#include <common>')
+          .replace('#include <uv_vertex>', '#include <uv_vertex>\nvUvBody = uvBody;\nvUvValid = uvBodyValid;');
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', 'uniform sampler2D inkMask;\nuniform float uPulse;\nvarying vec2 vUvBody;\n#include <common>')
+          .replace('#include <common>', 'uniform sampler2D inkMask;\nuniform float uPulse;\nvarying vec2 vUvBody;\nvarying float vUvValid;\n#include <common>')
           .replace('#include <map_fragment>', `#include <map_fragment>
-            // 4タップの max で断片境界の1px級の黒テクセル(穴)を埋める
-            float o = 1.0 / 1024.0;
-            float mL = dot( texture2D( inkMask, vUvBody + vec2( -o, 0.0 ) ).rgb, vec3( 0.333 ) );
-            float mR = dot( texture2D( inkMask, vUvBody + vec2(  o, 0.0 ) ).rgb, vec3( 0.333 ) );
-            float mD = dot( texture2D( inkMask, vUvBody + vec2( 0.0, -o ) ).rgb, vec3( 0.333 ) );
-            float mU = dot( texture2D( inkMask, vUvBody + vec2( 0.0,  o ) ).rgb, vec3( 0.333 ) );
-            float inkLum = max( max( mL, mR ), max( mD, mU ) );
-            float paper = smoothstep( 0.012, 0.05, inkLum );
+            // 意味マスクはエミッシブのαチャンネル(1=紙, 0=墨)。
+            // min 5タップで墨側へ保守的に膨張(細い筆線を消さない)
+            float o = 1.0 / 2048.0;
+            float aC = texture2D( inkMask, vUvBody ).a;
+            float aL = texture2D( inkMask, vUvBody + vec2( -o, 0.0 ) ).a;
+            float aR = texture2D( inkMask, vUvBody + vec2(  o, 0.0 ) ).a;
+            float aD = texture2D( inkMask, vUvBody + vec2( 0.0, -o ) ).a;
+            float aU = texture2D( inkMask, vUvBody + vec2( 0.0,  o ) ).a;
+            float paper = min( aC, min( min( aL, aR ), min( aD, aU ) ) );
+            // UV対応付けに失敗した三角形は隠す側に倒す
+            paper *= step( 0.5, vUvValid );
             diffuseColor.rgb = mix( vec3( 1.0 ), diffuseColor.rgb, paper * ( 1.0 - uPulse ) );`);
         mat.userData.shader = shader;
       };

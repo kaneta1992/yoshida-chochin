@@ -229,11 +229,8 @@ for (const mat of doc.getRoot().listMaterials()) {
   const jpg = await img.quality(92).getBufferAsync(Jimp.MIME_JPEG);
   baseTex.setImage(new Uint8Array(jpg)).setMimeType('image/jpeg');
 
-  // 修復後のアルベドで 3D 背景輝度を再計算(発光と完全一致させる)
-  const lumFixed = lumAt512(img);
-  bg3d = computeBg3D(lumFixed);
-  // 広半径版: 折りジワ(細い線)は紙に埋もれ、墨(太い塊)は暗いまま
-  const bg3dWide = computeBg3D(lumFixed, 0.085);
+  // 修復後のアルベドで 3D 背景輝度を再計算(ラフネスマップ用)
+  bg3d = computeBg3D(lumAt512(img));
 
   // --- 3. ラフネスマップ ---
   const RW = 1024, RH = Math.max(1, Math.round(1024 * H / W));
@@ -260,49 +257,56 @@ for (const mat of doc.getRoot().listMaterials()) {
     .setMetallicFactor(0.0);
 
   // --- 4. エミッシブ(夜の透過光) ---
-  const EW = 1024, EH = Math.max(1, Math.round(1024 * H / W));
-  const emis = img.clone().resize(EW, EH);
+  // 昼に実際表示される「JPEG再デコード後」の画像から同解像度で生成する。
+  // 輝度式・解像度・ミップが昼と揃うため footprint が一致する。
+  // αチャンネル = デカール用の意味マスク(1=紙 / 0=墨)。発光量とは分離する
+  const emis = await Jimp.read(Buffer.from(jpg));
   const ed = emis.bitmap.data;
-  const eN = EW * EH;
+  const eN = W * H;
+
+  // 被覆マスク(512→フル解像度へ最近傍拡大)
+  const covE = new Uint8Array(eN);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const sx = Math.min(S - 1, (x * S / W) | 0);
+      const sy = Math.min(S - 1, (y * S / H) | 0);
+      covE[y * W + x] = tex3d.cov[sy * S + sx];
+    }
+  }
+  // 先にガターを充填してから輝度・ディテールを計算する
+  // (未充填だと blur が別のUV島や黒ガターを混ぜる)
+  padImageRGB(ed, covE, W, H);
+
   const eLum = new Uint8Array(eN);
   for (let i = 0; i < eN; i++) {
     eLum[i] = (ed[i * 4] * 0.299 + ed[i * 4 + 1] * 0.587 + ed[i * 4 + 2] * 0.114) | 0;
   }
-  const eDetailBg = boxBlurU8(eLum, EW, EH, 8);
-  const bgSampleE = makeSampler(bg3d, EW, EH);
-  const bgSampleWide = makeSampler(bg3dWide, EW, EH);
+  const eDetailBg = boxBlurU8(eLum, W, H, 16);
+  const bgSampleFull = makeSampler(bg3d, W, H);
   const CREAM = [222, 188, 146];
-  for (let y = 0; y < EH; y++) {
-    for (let x = 0; x < EW; x++) {
-      const i = y * EW + x;
-      // 細スケール: 筆エッジに忠実 / 広スケール: 折りジワを紙として扱う
-      const mFine = smooth(bgSampleE(x, y), INK_LO + 6, INK_HI + 6);
-      const mWide = smooth(bgSampleWide(x, y), 100, 132);
-      const m = Math.max(mFine, mWide);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      // 墨判定は「テクセル単位のアルベド輝度」のみ — 昼と同一 footprint。
+      // paperFloor(広域max)は暗いテクセルを強制発光させ、遠景で
+      // ひび割れ状に光る欠陥の原因だったため廃止(Codexレビュー指摘)
+      const t = smooth(eLum[i], 40, 96);
+      // 深い墨・漆ゾーン(3D近傍が暗い)では微細な擦り傷の部分発光を抑える。
+      // 文様スケールの特徴(落款・筆ハロー)は近傍が明るいので影響しない
+      const zone = smooth(bgSampleFull(x, y), 52, 78);
+      const m = Math.pow(t, 0.7) * zone;
       let detail = eLum[i] / Math.max(20, eDetailBg[i]);
       detail = Math.max(0.9, Math.min(1.07, detail));
       for (let c = 0; c < 3; c++) {
         ed[i * 4 + c] = Math.min(255, CREAM[c] * detail * m);
       }
+      // 意味マスク: 紙=255 / 墨=0(急峻に分ける。発光の見た目とは独立)
+      ed[i * 4 + 3] = Math.round(smooth(eLum[i], 52, 74) * 255);
     }
-  }
-  // UVガター(アトラス断片の隙間)を被覆領域からフラッド充填する。
-  // 黒いガターが残っているとデカールのUV外挿やミップマップが黒を拾い、
-  // 「墨の下」デカールに穴あきノイズが出る
-  {
-    const covE = new Uint8Array(eN);
-    for (let y = 0; y < EH; y++) {
-      for (let x = 0; x < EW; x++) {
-        const sx = Math.min(S - 1, (x * S / EW) | 0);
-        const sy = Math.min(S - 1, (y * S / EH) | 0);
-        covE[y * EW + x] = tex3d.cov[sy * S + sx];
-      }
-    }
-    padImageRGB(ed, covE, EW, EH);
   }
 
-  // PNG(可逆)で保存: JPEG圧縮ノイズがあると墨内部が完全な黒にならず、
-  // デカールの墨マスク判定が誤動作する
+  // PNG(可逆・RGBA)で保存: JPEG化するとマスクαが使えず、
+  // 圧縮ノイズで墨内部が完全な黒にならない
   const emisPng = await emis.getBufferAsync(Jimp.MIME_PNG);
   const emisTex = doc.createTexture('emissive')
     .setImage(new Uint8Array(emisPng))
