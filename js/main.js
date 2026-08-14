@@ -12,6 +12,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 import { LanternTextures } from './textures.js';
 import { buildLantern, TOTAL_H, BODY_R } from './lantern.js';
@@ -210,7 +212,12 @@ class App {
     try {
       const head = await fetch(GLB_PATH, { method: 'HEAD' });
       if (!head.ok) return;
-      const gltf = await new GLTFLoader().loadAsync(GLB_PATH);
+      const loader = new GLTFLoader();
+      const draco = new DRACOLoader();
+      draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/draco/');
+      loader.setDRACOLoader(draco);
+      loader.setMeshoptDecoder(MeshoptDecoder);
+      const gltf = await loader.loadAsync(GLB_PATH);
       this.swapToGLB(gltf.scene);
       console.info('GLB model loaded');
     } catch (e) {
