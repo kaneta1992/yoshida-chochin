@@ -35,8 +35,10 @@ const PIVOT_Y = HANG_GAP + TOTAL_H;
 const TARGET_Y = HANG_GAP + TOTAL_H * 0.52;
 const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシージャル)
 const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに要調整)
-const GLB_PATH = 'assets/lantern.glb';
-const PROXY_PATH = 'assets/lantern-proxy.glb'; // デカール投影・レイキャスト用の軽量メッシュ
+// モデル更新時は ASSET_VER を上げる(GitHub Pages のキャッシュ対策)
+const ASSET_VER = '2026-08-15b';
+const GLB_PATH = `assets/lantern.glb?v=${ASSET_VER}`;
+const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // デカール投影・レイキャスト用
 const DECAL_LIFT_FINAL = 0.0018; // 本体投影時に表面から浮かせる量
 const DECAL_LIFT_PROXY = 0.004;  // プロキシ投影時(ドラッグ中)の浮かせ量
 

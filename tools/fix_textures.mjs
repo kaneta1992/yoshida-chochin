@@ -181,6 +181,28 @@ for (const mat of doc.getRoot().listMaterials()) {
   const { width: W, height: H, data } = img.bitmap;
   console.log('  base color:', W, 'x', H);
 
+  // 被覆マスク(512→フル解像度へ「保守的に」拡大 = 2x2 の AND)。
+  // 最近傍1点だとガター実画素が被覆済みと誤判定される
+  const covFull = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const sx = Math.min(S - 1, (x * S / W) | 0);
+      const sy = Math.min(S - 1, (y * S / H) | 0);
+      const sx2 = Math.min(S - 1, sx + 1);
+      const sy2 = Math.min(S - 1, sy + 1);
+      covFull[y * W + x] =
+        tex3d.cov[sy * S + sx] & tex3d.cov[sy * S + sx2] &
+        tex3d.cov[sy2 * S + sx] & tex3d.cov[sy2 * S + sx2];
+    }
+  }
+  // bg3d の入力: ガター充填した複製を縮小する。
+  // 未充填のまま縮小すると島境界でガター黒が混ざり、境界が減光する
+  const paddedLum512 = () => {
+    const clone = img.clone();
+    padImageRGB(clone.bitmap.data, covFull, W, H);
+    return lumAt512(clone);
+  };
+
   // --- 1. 明部の黒カス除去 ---
   const lum = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) {
@@ -196,7 +218,7 @@ for (const mat of doc.getRoot().listMaterials()) {
   blurRGB(eroded, fillDark, W, H, 2);
 
   // --- 2. 3D近傍輝度による墨判定と欠け充填 ---
-  let bg3d = computeBg3D(lumAt512(img));
+  let bg3d = computeBg3D(paddedLum512());
   let bgSample = makeSampler(bg3d, W, H);
   let filled = 0, despeck = 0;
   for (let y = 0; y < H; y++) {
@@ -229,8 +251,8 @@ for (const mat of doc.getRoot().listMaterials()) {
   const jpg = await img.quality(92).getBufferAsync(Jimp.MIME_JPEG);
   baseTex.setImage(new Uint8Array(jpg)).setMimeType('image/jpeg');
 
-  // 修復後のアルベドで 3D 背景輝度を再計算(ラフネスマップ用)
-  bg3d = computeBg3D(lumAt512(img));
+  // 修復後のアルベドで 3D 背景輝度を再計算(ラフネスマップ・zone用)
+  bg3d = computeBg3D(paddedLum512());
 
   // --- 3. ラフネスマップ ---
   const RW = 1024, RH = Math.max(1, Math.round(1024 * H / W));
@@ -264,44 +286,50 @@ for (const mat of doc.getRoot().listMaterials()) {
   const ed = emis.bitmap.data;
   const eN = W * H;
 
-  // 被覆マスク(512→フル解像度へ最近傍拡大)
-  const covE = new Uint8Array(eN);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const sx = Math.min(S - 1, (x * S / W) | 0);
-      const sy = Math.min(S - 1, (y * S / H) | 0);
-      covE[y * W + x] = tex3d.cov[sy * S + sx];
-    }
-  }
   // 先にガターを充填してから輝度・ディテールを計算する
-  // (未充填だと blur が別のUV島や黒ガターを混ぜる)
-  padImageRGB(ed, covE, W, H);
+  // (未充填だと blur が別のUV島や黒ガターを混ぜる。covFull は保守的AND版 —
+  //  Opusレビュー: 最近傍1点の被覆誤判定が重篤暗線の28.4%を生んでいた)
+  padImageRGB(ed, covFull, W, H);
 
   const eLum = new Uint8Array(eN);
   for (let i = 0; i < eN; i++) {
     eLum[i] = (ed[i * 4] * 0.299 + ed[i * 4 + 1] * 0.587 + ed[i * 4 + 2] * 0.114) | 0;
   }
+
+  // 発光「レベル」は形態学的クロージング(細い暗線を埋める)後の輝度から作る。
+  // 重篤な暗線は墨縁1〜4pxの毛羽・細線で、smoothstep+pow が対比を2〜3倍に
+  // 拡大していた(Opusレビュー実測)。閉包は太い墨の形状を変えない
+  const R_SCRATCH = 3;
+  const eLumClean = morphU8(morphU8(eLum, W, H, R_SCRATCH, true), W, H, R_SCRATCH, false);
+
+  // 島境界から遠い「内部」マスク: 境界近傍では blur16(detail) が信用できない
+  const covE255 = Uint8Array.from(covFull, (v) => v * 255);
+  const interior = morphU8(covE255, W, H, 8, false);
+
   const eDetailBg = boxBlurU8(eLum, W, H, 16);
   const bgSampleFull = makeSampler(bg3d, W, H);
   const CREAM = [222, 188, 146];
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
-      // 墨判定は「テクセル単位のアルベド輝度」のみ — 昼と同一 footprint。
-      // paperFloor(広域max)は暗いテクセルを強制発光させ、遠景で
-      // ひび割れ状に光る欠陥の原因だったため廃止(Codexレビュー指摘)
-      const t = smooth(eLum[i], 40, 96);
-      // 深い墨・漆ゾーン(3D近傍が暗い)では微細な擦り傷の部分発光を抑える。
-      // 文様スケールの特徴(落款・筆ハロー)は近傍が明るいので影響しない
-      const zone = smooth(bgSampleFull(x, y), 52, 78);
+      // 墨判定は「傷抜き輝度」— 太い墨・落款は昼と同一 footprint のまま、
+      // 墨縁の毛羽・擦り傷だけが夜に増幅されない
+      const t = smooth(eLumClean[i], 40, 96);
+      // 深い墨・漆ゾーン(3D近傍が暗い)では微細な擦り傷の部分発光を抑える
+      // (明るい傷はクロージングでは消えないため、ゾーン側で抑制する)
+      const zone = smooth(bgSampleFull(x, y), 58, 86);
       const m = Math.pow(t, 0.7) * zone;
+      // 質感(和紙の畝・繊維)は元の輝度から。傷が消えた分は二重計上しない
       let detail = eLum[i] / Math.max(20, eDetailBg[i]);
-      detail = Math.max(0.9, Math.min(1.07, detail));
+      detail = Math.max(0.90, Math.min(1.10, detail));
+      const scratch = 1 - Math.min(1, (eLumClean[i] - eLum[i]) / 40);
+      detail = 1 + (detail - 1) * scratch;
+      if (interior[i] < 255) detail = 1; // 島境界近傍は detail 不使用
       for (let c = 0; c < 3; c++) {
         ed[i * 4 + c] = Math.min(255, CREAM[c] * detail * m);
       }
-      // 意味マスク: 紙=255 / 墨=0(急峻に分ける。発光の見た目とは独立)
-      ed[i * 4 + 3] = Math.round(smooth(eLum[i], 52, 74) * 255);
+      // 意味マスク: 紙=255 / 墨=0(傷抜き輝度から。傷でデカールに穴を開けない)
+      ed[i * 4 + 3] = Math.round(smooth(eLumClean[i], 52, 74) * 255);
     }
   }
 
@@ -322,6 +350,36 @@ await io.write(outPath, doc);
 console.log('written:', outPath);
 
 // ---------- helpers ----------
+
+// グレースケールの min/max フィルタ(分離適用)。dilate=true で max(膨張)
+function morphU8(src, W, H, r, dilate) {
+  const tmp = new Uint8Array(src.length);
+  const out = new Uint8Array(src.length);
+  const init = dilate ? 0 : 255;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let m = init;
+      for (let k = -r; k <= r; k++) {
+        const xx = Math.min(W - 1, Math.max(0, x + k));
+        const v = src[y * W + xx];
+        if (dilate ? v > m : v < m) m = v;
+      }
+      tmp[y * W + x] = m;
+    }
+  }
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let m = init;
+      for (let k = -r; k <= r; k++) {
+        const yy = Math.min(H - 1, Math.max(0, y + k));
+        const v = tmp[yy * W + x];
+        if (dilate ? v > m : v < m) m = v;
+      }
+      out[y * W + x] = m;
+    }
+  }
+  return out;
+}
 
 // RGBA画像の未被覆画素をBFSで最近傍の被覆値へ充填
 function padImageRGB(data, cov, W, H) {
