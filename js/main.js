@@ -281,6 +281,14 @@ class App {
     mat.emissiveMap = mat.map;
     mat.emissiveIntensity = 0;
     mat.envMapIntensity = 0.9;
+    // フォトグラメトリ由来のノイズ除去: ノーマル/ラフネス/メタルネスマップは
+    // ひび割れ状のアーティファクトになるため使わない(形状は300kポリゴンが担う)
+    mat.normalMap = null;
+    mat.roughnessMap = null;
+    mat.metalnessMap = null;
+    mat.roughness = 0.7;
+    mat.metalness = 0.0;
+    mat.needsUpdate = true;
 
     this.body = bodyMesh;
     this.bodyMat = mat;
