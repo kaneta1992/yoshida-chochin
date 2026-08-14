@@ -58,23 +58,24 @@ def main():
         key = f.read().strip()
 
     exts = (".jpg", ".jpeg", ".png", ".webp")
-    images = sorted(
-        os.path.join(img_dir, n)
-        for n in os.listdir(img_dir)
-        if n.lower().endswith(exts)
-    )[:4]
+    names = [n for n in os.listdir(img_dir) if n.lower().endswith(exts)]
+    # 正面を先頭に(Meshy は先頭画像を主ビューとして扱う)
+    priority = {"front": 0, "right": 1, "back": 2, "left": 3}
+    names.sort(key=lambda n: (priority.get(os.path.splitext(n)[0].lower(), 9), n))
+    images = [os.path.join(img_dir, n) for n in names][:4]
     if not images:
         print("ERROR: no images found in", img_dir)
         sys.exit(1)
 
     print(f"uploading {len(images)} images:", [os.path.basename(p) for p in images], flush=True)
+    polycount = int(os.environ.get("MESHY_POLYCOUNT", "30000"))
     payload = {
         "image_urls": [to_data_uri(p) for p in images],
         "should_remesh": True,
         "should_texture": True,
         "enable_pbr": True,
         "topology": "triangle",
-        "target_polycount": 30000,
+        "target_polycount": polycount,
     }
 
     try:

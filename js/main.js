@@ -31,7 +31,8 @@ const FOG_NIGHT = new THREE.Color('#0a0f1c');
 const HANG_GAP = 0.14;          // 地面から火袋下端までの距離
 const PIVOT_Y = HANG_GAP + TOTAL_H;
 const TARGET_Y = HANG_GAP + TOTAL_H * 0.52;
-const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転
+const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシージャル)
+const GLB_FRONT_ROT = 0.7;      // GLB の正面補正
 const GLB_PATH = 'assets/lantern.glb';
 
 class App {
@@ -228,6 +229,7 @@ class App {
     root.position.x -= center.x;
     root.position.z -= center.z;
     root.position.y -= box.min.y;
+    root.rotation.y = GLB_FRONT_ROT;
 
     // 最大メッシュ = 火袋(デカール・発光の対象)
     let bodyMesh = null, maxVol = 0;
@@ -627,7 +629,7 @@ class App {
 
     const emiss = m * (1.45 + 0.22 * flick);
     this.bodyMat.emissiveIntensity = emiss;
-    this.candle.intensity = m * (1.7 + 0.5 * flick);
+    this.candle.intensity = m * (1.35 + 0.4 * flick);
     this.candle.position.x = 0.006 * Math.sin(t * 7.1);
     this.candle.position.z = 0.006 * Math.cos(t * 6.3);
 

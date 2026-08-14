@@ -199,7 +199,7 @@ export function buildLantern(textures) {
   group.add(clamp);
 
   // ---------- 蝋燭の光源(夜) ----------
-  const candle = new THREE.PointLight(0xffa245, 0.0, 1.6, 2.0);
+  const candle = new THREE.PointLight(0xffa245, 0.0, 1.15, 2.0);
   candle.position.set(0, CAP_H_BOT + BODY_H * 0.42, 0);
   candle.name = 'candle';
   group.add(candle);

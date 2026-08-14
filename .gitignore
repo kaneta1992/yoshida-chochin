@@ -10,3 +10,7 @@ assets/test-mark.png
 # OS
 Thumbs.db
 .DS_Store
+
+# Meshy 生成サムネイル
+assets/*.thumb.png
+assets/lantern-hq.glb
