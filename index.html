@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -49,14 +49,57 @@
     <h1>吉田提灯</h1>
     <p>YUMIHARI CHŌCHIN — 弓張提灯</p>
   </div>
-  <button id="modeToggle" class="mode-toggle" aria-label="昼夜切替" title="昼夜切替">
-    <span class="mt-track">
-      <span class="mt-icon mt-sun">☀</span>
-      <span class="mt-icon mt-moon">🕯</span>
-      <span class="mt-knob"></span>
-    </span>
-  </button>
+  <div class="masthead-actions">
+    <button id="helpBtn" class="help-btn" aria-label="使い方" title="使い方">?</button>
+    <button id="modeToggle" class="mode-toggle" aria-label="昼夜切替" title="昼夜切替">
+      <span class="mt-track">
+        <span class="mt-icon mt-sun">☀</span>
+        <span class="mt-icon mt-moon">🕯</span>
+        <span class="mt-knob"></span>
+      </span>
+    </button>
+  </div>
 </header>
+
+<!-- 使い方ガイド(初回自動表示 / ? ボタンでいつでも) -->
+<div id="help" class="help-overlay" hidden>
+  <div class="help-card">
+    <h2>吉田提灯 3Dビューアの使い方</h2>
+
+    <section>
+      <h3>基本操作</h3>
+      <ul>
+        <li><b>回転</b> — 画面をドラッグ(スマホは指でスワイプ)</li>
+        <li><b>ズーム</b> — ピンチ、またはマウスホイール</li>
+        <li><b>昼 / 夜</b> — 右上の <b>☀ / 🕯</b> スイッチ。夜はろうそくが灯ります</li>
+      </ul>
+    </section>
+
+    <section>
+      <h3>デカール(好きな画像を貼る)</h3>
+      <ol>
+        <li>下の「<b>✦ デカール</b>」タブを開く</li>
+        <li>「<b>＋ 画像を追加</b>」で自分の画像、または「<b>桔梗紋</b>」でサンプルを追加</li>
+        <li><b>提灯の上をドラッグ</b>して位置を決める(点滅しているものが選択中)</li>
+        <li>スライダーで<b>サイズ・回転・不透明度</b>を調整</li>
+        <li>「<b>墨の上 / 墨の下</b>」で文字との重なり順を選ぶ<br>
+          <small>墨の下 = 和紙に直接印刷された見た目になり、文字が上に重なります</small></li>
+      </ol>
+    </section>
+
+    <section>
+      <h3>プリセット(保存と共有)</h3>
+      <ul>
+        <li><b>保存</b> — 今の見た目(デカール・昼夜・カメラ)に名前を付けて保存</li>
+        <li><b>適用</b> — 保存した見た目をいつでも復元。「桔梗紋(サンプル)」もお試しください</li>
+        <li><b>共有リンクをコピー</b> — URLを送るだけで同じ見た目を共有</li>
+        <li><b>書き出し / 読み込み</b> — ファイル(JSON)として保存・復元</li>
+      </ul>
+    </section>
+
+    <button id="helpClose" class="btn accent wide">はじめる</button>
+  </div>
+</div>
 
 <div id="hint" class="hint">ドラッグで回転 · ピンチ／ホイールでズーム</div>
 
@@ -72,6 +115,7 @@
   <!-- 表示 -->
   <div class="panel-page" data-page="view">
     <h2 class="panel-title">表示設定</h2>
+    <p class="panel-note">画面ドラッグで回転、ピンチ / ホイールで拡大縮小。右上の ☀ / 🕯 で昼夜を切り替えられます。</p>
     <label class="row switch-row">
       <span>自動回転</span>
       <input type="checkbox" id="optAutoRotate">
@@ -101,7 +145,7 @@
   <!-- デカール -->
   <div class="panel-page" data-page="decal" hidden>
     <h2 class="panel-title">デカール</h2>
-    <p class="panel-note">画像を追加し、提灯をドラッグして位置を決めます。</p>
+    <p class="panel-note">① 画像を追加(または桔梗紋) → ② 提灯の上をドラッグして位置決め → ③ スライダーで調整。「墨の下」にすると文字が上に重なり、和紙に印刷したような見た目になります。</p>
     <div class="decal-toolbar">
       <label class="btn accent" for="decalFile">＋ 画像を追加</label>
       <button id="decalSample" class="btn ghost sample-btn">
@@ -137,6 +181,7 @@
   <!-- プリセット -->
   <div class="panel-page" data-page="preset" hidden>
     <h2 class="panel-title">プリセット</h2>
+    <p class="panel-note">現在の見た目(デカール・昼夜・カメラ)を保存・復元できます。「共有リンクをコピー」でURLを送れば、他の人にも同じ見た目をそのまま共有できます。</p>
     <div class="preset-save">
       <input type="text" id="presetName" placeholder="プリセット名" maxlength="24">
       <button id="btnSavePreset" class="btn accent">保存</button>
@@ -153,6 +198,6 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script type="module" src="js/main.js?v=2026-08-15e"></script>
+<script type="module" src="js/main.js?v=2026-08-15f"></script>
 </body>
 </html>

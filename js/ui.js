@@ -1,7 +1,7 @@
-// ============================================================
+﻿// ============================================================
 // ui.js — DOM UI とアプリ状態のバインディング
 // ============================================================
-import * as P from './presets.js?v=2026-08-15e';
+import * as P from './presets.js?v=2026-08-15f';
 
 export class UI {
   constructor(app) {
@@ -18,7 +18,27 @@ export class UI {
       app.setMode(app.state.mode === 'day' ? 'night' : 'day');
     });
 
+    this.bindHelp();
+
     setTimeout(() => this.$('#hint')?.classList.add('gone'), 6000);
+  }
+
+  // ---------- 使い方ガイド ----------
+  bindHelp() {
+    const overlay = this.$('#help');
+    const KEY = 'yoshida-chochin.helpSeen';
+    const open = () => { overlay.hidden = false; };
+    const close = () => {
+      overlay.hidden = true;
+      try { localStorage.setItem(KEY, '1'); } catch { /* noop */ }
+    };
+    this.$('#helpBtn').addEventListener('click', open);
+    this.$('#helpClose').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    // 初回訪問時は自動表示
+    let seen = false;
+    try { seen = !!localStorage.getItem(KEY); } catch { /* noop */ }
+    if (!seen) open();
   }
 
   // パネルの高さ変化(デカール選択など)に合わせてビューシフトを更新
@@ -36,17 +56,24 @@ export class UI {
   }
 
   // ---------- ドック / パネル ----------
+  closePanel() {
+    const panel = this.$('#panel');
+    this.activePanel = null;
+    panel.hidden = true;
+    panel.style.transform = '';
+    panel.style.transition = '';
+    document.querySelectorAll('.dock-btn').forEach((b) => b.classList.remove('active'));
+    this.app.state.decalTabOpen = false;
+    this.app.setPanelShift(0);
+  }
+
   bindDock() {
     const panel = this.$('#panel');
     document.querySelectorAll('.dock-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         const name = btn.dataset.panel;
         if (this.activePanel === name) {
-          this.activePanel = null;
-          panel.hidden = true;
-          btn.classList.remove('active');
-          this.app.state.decalTabOpen = false;
-          this.app.setPanelShift(0);
+          this.closePanel();
           return;
         }
         this.activePanel = name;
@@ -64,6 +91,37 @@ export class UI {
     });
     // 初期状態はパネルを閉じておく
     document.querySelectorAll('.dock-btn').forEach((b) => b.classList.remove('active'));
+
+    // グリップを下へスワイプしてパネルを閉じる
+    const grip = panel.querySelector('.panel-grip');
+    let dragStartY = null, dragY = 0;
+    grip.addEventListener('pointerdown', (e) => {
+      dragStartY = e.clientY;
+      dragY = 0;
+      panel.style.transition = 'none';
+      grip.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (dragStartY === null) return;
+      dragY = Math.max(0, e.clientY - dragStartY);
+      panel.style.transform = `translate(-50%, ${dragY}px)`;
+    });
+    const dragEnd = (e) => {
+      if (dragStartY === null) return;
+      dragStartY = null;
+      try { grip.releasePointerCapture(e.pointerId); } catch { /* noop */ }
+      if (dragY > 70) {
+        this.closePanel();
+      } else {
+        // 元の位置へ戻す
+        panel.style.transition = 'transform 0.22s ease';
+        panel.style.transform = 'translate(-50%, 0)';
+        setTimeout(() => { panel.style.transition = ''; panel.style.transform = ''; }, 240);
+      }
+    };
+    grip.addEventListener('pointerup', dragEnd);
+    grip.addEventListener('pointercancel', dragEnd);
   }
 
   // ---------- 表示 ----------

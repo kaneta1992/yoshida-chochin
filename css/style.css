@@ -77,6 +77,66 @@ html, body {
   text-shadow: 0 1px 10px rgba(0,0,0,0.5);
 }
 
+.masthead-actions {
+  display: flex; align-items: center; gap: 10px;
+  pointer-events: auto;
+}
+
+/* ヘルプボタン */
+.help-btn {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-brd);
+  background: var(--glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  color: var(--gold-hi);
+  font-family: var(--font-jp); font-size: 19px; font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+.help-btn:active { transform: scale(0.94); }
+
+/* 使い方ガイド */
+.help-overlay[hidden] { display: none; } /* display:flex が hidden 属性に勝たないように */
+.help-overlay {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(6, 8, 14, 0.6);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: helpIn 0.3s ease;
+}
+@keyframes helpIn { from { opacity: 0; } to { opacity: 1; } }
+.help-card {
+  width: min(480px, 100%);
+  max-height: min(82vh, 720px);
+  overflow-y: auto;
+  background: rgba(18, 20, 30, 0.92);
+  border: 1px solid var(--glass-brd);
+  border-radius: 20px;
+  padding: 26px 26px calc(22px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 20px 70px rgba(0,0,0,0.6);
+}
+.help-card h2 {
+  font-size: 17px; font-weight: 700; letter-spacing: 0.14em;
+  color: var(--paper);
+  padding-bottom: 12px; margin-bottom: 6px;
+  border-bottom: 1px solid rgba(201,168,106,0.25);
+}
+.help-card h3 {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.2em;
+  color: var(--gold);
+  margin: 18px 0 8px;
+}
+.help-card ul, .help-card ol {
+  padding-left: 20px;
+  font-size: 12.5px; line-height: 2.0;
+  color: var(--text);
+}
+.help-card li b { color: var(--gold-hi); font-weight: 600; }
+.help-card small { color: var(--text-dim); }
+.help-card .btn { margin-top: 20px; }
+
 /* 昼夜トグル */
 .mode-toggle {
   pointer-events: auto;
@@ -141,6 +201,8 @@ body.mode-night .mt-knob { transform: translateX(48px); background: linear-gradi
   padding: 9px 18px; border-radius: 999px;
   cursor: pointer;
   transition: background 0.25s, color 0.25s;
+  white-space: nowrap; /* 狭い画面でラベルが縦に折り返すのを防ぐ */
+  flex-shrink: 0;
 }
 .dock-ico { font-size: 14px; }
 .dock-btn.active {
@@ -174,8 +236,14 @@ body.decal-dragging .panel {
 }
 .panel { transition: opacity 0.25s; }
 
-.panel-grip { display: flex; justify-content: center; padding: 4px 0 10px; }
-.panel-grip span { width: 42px; height: 4px; border-radius: 2px; background: rgba(240,234,217,0.22); }
+.panel-grip {
+  display: flex; justify-content: center;
+  padding: 10px 0 14px; margin: -8px -20px 0; /* 掴みやすい広めのヒット領域 */
+  cursor: grab;
+  touch-action: none; /* 下スワイプで閉じる操作を奪われない */
+}
+.panel-grip:active { cursor: grabbing; }
+.panel-grip span { width: 42px; height: 4px; border-radius: 2px; background: rgba(240,234,217,0.22); pointer-events: none; }
 .panel-title {
   font-size: 14px; font-weight: 600; letter-spacing: 0.28em;
   color: var(--gold); margin-bottom: 14px;

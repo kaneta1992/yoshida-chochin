@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // main.js — 吉田提灯 3D ビューア
 // PBR + IBL(PMREM環境マップによるGI近似) + ACES + Bloom
 // デカールは本体シェーダー内のプロジェクション合成
@@ -17,10 +17,10 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 // 注意: JS更新時は index.html の main.js の ?v= と、この4つの ?v= を揃えて上げる
 // (GitHub Pages のキャッシュでモジュールだけ古くなる事故を防ぐ)
-import { LanternTextures } from './textures.js?v=2026-08-15e';
-import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-15e';
-import { UI } from './ui.js?v=2026-08-15e';
-import { applyState, decodeShareHash } from './presets.js?v=2026-08-15e';
+import { LanternTextures } from './textures.js?v=2026-08-15f';
+import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-15f';
+import { UI } from './ui.js?v=2026-08-15f';
+import { applyState, decodeShareHash } from './presets.js?v=2026-08-15f';
 
 // ---------- 色定義(昼 / 夜) ----------
 const SKY = {
