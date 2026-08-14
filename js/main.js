@@ -34,8 +34,11 @@ const HANG_GAP = 0.14;          // 地面から火袋下端までの距離
 const PIVOT_Y = HANG_GAP + TOTAL_H;
 const TARGET_Y = HANG_GAP + TOTAL_H * 0.52;
 const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシージャル)
-const GLB_FRONT_ROT = 0.7;      // GLB の正面補正
+const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに要調整)
 const GLB_PATH = 'assets/lantern.glb';
+const PROXY_PATH = 'assets/lantern-proxy.glb'; // デカール投影・レイキャスト用の軽量メッシュ
+const DECAL_LIFT_FINAL = 0.0018; // 本体投影時に表面から浮かせる量
+const DECAL_LIFT_PROXY = 0.004;  // プロキシ投影時(ドラッグ中)の浮かせ量
 
 class App {
   constructor() {
@@ -158,6 +161,7 @@ class App {
     });
     const ground = new THREE.Mesh(new THREE.CircleGeometry(8, 48), this.groundMat);
     ground.rotation.x = -Math.PI / 2;
+    ground.layers.enable(1); // 蝋燭光(レイヤー1)を受ける
     this.scene.add(ground);
 
     // 接地影(ブロブシャドウ)
@@ -194,6 +198,9 @@ class App {
     this.body = body;
     this.bodyMat = bodyMat;
     this.candle = candle;
+    // 蝋燭光は地面の灯だまり専用(メッシュのピンホール光漏れを防ぐ)
+    this.candle.layers.set(1);
+    this.camera.layers.enable(1);
     this.lanternGroup = group;
 
     this.swayPivot = new THREE.Group();
@@ -220,6 +227,12 @@ class App {
       const gltf = await loader.loadAsync(GLB_PATH);
       this.swapToGLB(gltf.scene);
       console.info('GLB model loaded');
+      // デカール用プロキシ(高ポリゴンモデルの投影負荷対策・任意)
+      try {
+        const proxy = await loader.loadAsync(PROXY_PATH);
+        this.attachProxy(proxy.scene);
+        console.info('decal proxy loaded');
+      } catch { /* プロキシ無しなら本体に直接投影 */ }
     } catch (e) {
       console.info('GLB not available, using procedural model');
     }
@@ -237,6 +250,8 @@ class App {
     root.position.z -= center.z;
     root.position.y -= box.min.y;
     root.rotation.y = GLB_FRONT_ROT;
+    // プロキシに同一変換を適用するため記録しておく
+    this.glbXform = { scale, pos: root.position.clone(), rotY: GLB_FRONT_ROT };
 
     // 最大メッシュ = 火袋(デカール・発光の対象)
     let bodyMesh = null, maxVol = 0;
@@ -273,6 +288,33 @@ class App {
 
     // デカールを新しいボディに再投影
     this.rebuildAllDecals();
+  }
+
+  // デカール投影・レイキャスト用の不可視プロキシ(本体と同一座標系)
+  attachProxy(root) {
+    if (!this.glbXform) return;
+    root.scale.setScalar(this.glbXform.scale);
+    root.position.copy(this.glbXform.pos);
+    root.rotation.y = this.glbXform.rotY;
+    root.visible = false;
+
+    let mesh = null, maxVol = 0;
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.computeBoundingBox();
+      const s = o.geometry.boundingBox.getSize(new THREE.Vector3());
+      const vol = s.x * s.y * s.z;
+      if (vol > maxVol) { maxVol = vol; mesh = o; }
+    });
+    if (!mesh) return;
+    this.lanternGroup.add(root);
+    this.proxyBody = mesh;
+    this.rebuildAllDecals();
+  }
+
+  // デカールの投影先(プロキシ優先)
+  get decalBody() {
+    return this.proxyBody || this.body;
   }
 
   paintSky(t) {
@@ -401,9 +443,14 @@ class App {
     }
   }
 
-  buildDecalMesh(d) {
+  // final=true: 本体メッシュへ投影(高品質・確定時)
+  // final=false: 軽量プロキシへ投影(ドラッグ中のプレビュー)
+  buildDecalMesh(d, final = true) {
     const img = this.textures.images.get(d.id);
     if (!img || !this.body) return;
+
+    const target = final ? this.body : this.decalBody;
+    const lift = final || target === this.body ? DECAL_LIFT_FINAL : DECAL_LIFT_PROXY;
 
     this.withRestPose(() => {
       const wp = this.lanternGroup.localToWorld(d.pos.clone());
@@ -418,7 +465,18 @@ class App {
       const sh = d.size;
       const sw = sh * (img.width / img.height);
       const sz = Math.max(sw, sh);
-      const geo = new DecalGeometry(this.body, wp, h.rotation.clone(), new THREE.Vector3(sw, sh, sz));
+      const geo = new DecalGeometry(target, wp, h.rotation.clone(), new THREE.Vector3(sw, sh, sz));
+
+      // 表面から法線方向へわずかに浮かせる(骨のヒダ・プロキシ誤差との Z ファイト防止)
+      const pAttr = geo.attributes.position, nAttr = geo.attributes.normal;
+      for (let i = 0; i < pAttr.count; i++) {
+        pAttr.setXYZ(
+          i,
+          pAttr.getX(i) + nAttr.getX(i) * lift,
+          pAttr.getY(i) + nAttr.getY(i) * lift,
+          pAttr.getZ(i) + nAttr.getZ(i) * lift
+        );
+      }
 
       let mesh = this.decalMeshes.get(d.id);
       if (mesh) {
@@ -472,6 +530,14 @@ class App {
     this.requestDecalRebuild(d.id);
   }
 
+  // スライダー確定時などに本体へ高品質投影し直す
+  commitSelectedDecal() {
+    const d = this.getSelectedDecal();
+    if (!d) return;
+    this.decalRebuildId = null;
+    this.buildDecalMesh(d, true);
+  }
+
   requestDecalRebuild(id) {
     this.decalRebuildId = id;
   }
@@ -512,7 +578,7 @@ class App {
   raycastCenter() {
     for (const ny of [0.05, 0, 0.15, -0.15]) {
       this.raycaster.setFromCamera(new THREE.Vector2(0, ny), this.camera);
-      const hit = this.raycaster.intersectObject(this.body, false)[0];
+      const hit = this.raycaster.intersectObject(this.decalBody, false)[0];
       if (hit) return hit;
     }
     return null;
@@ -562,9 +628,9 @@ class App {
       this.dragging = false;
       this.controls.enabled = true;
       try { el.releasePointerCapture(e.pointerId); } catch { /* noop */ }
-      // ドラッグ終了時は必ず最終位置で確定
+      // ドラッグ終了時は本体へ高品質投影で確定
       const d = this.getSelectedDecal();
-      if (d) { this.buildDecalMesh(d); this.decalRebuildId = null; }
+      if (d) { this.buildDecalMesh(d, true); this.decalRebuildId = null; }
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
@@ -575,7 +641,7 @@ class App {
     const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(new THREE.Vector2(x, y), this.camera);
-    return this.raycaster.intersectObject(this.body, false)[0] || null;
+    return this.raycaster.intersectObject(this.decalBody, false)[0] || null;
   }
 
   findDecalAt(worldPoint) {
@@ -636,7 +702,7 @@ class App {
 
     const emiss = m * (1.45 + 0.22 * flick);
     this.bodyMat.emissiveIntensity = emiss;
-    this.candle.intensity = m * (1.35 + 0.4 * flick);
+    this.candle.intensity = m * (0.95 + 0.3 * flick);
     this.candle.position.x = 0.006 * Math.sin(t * 7.1);
     this.candle.position.z = 0.006 * Math.cos(t * 6.3);
 
@@ -660,10 +726,10 @@ class App {
       this.swayPivot.rotation.x *= 0.94;
     }
 
-    // デカール再投影(スロットル: DecalGeometry 生成は重い)
+    // デカール再投影(ドラッグ中はプロキシへ・スロットル)
     if (this.decalRebuildId && performance.now() - this.lastDecalBuild > 120) {
       const d = this.state.decals.find((x) => x.id === this.decalRebuildId);
-      if (d) this.buildDecalMesh(d);
+      if (d) this.buildDecalMesh(d, false);
       this.decalRebuildId = null;
       this.lastDecalBuild = performance.now();
     }

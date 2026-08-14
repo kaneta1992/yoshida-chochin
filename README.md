@@ -39,8 +39,24 @@ js/presets.js     プリセット保存・共有リンク codec
 js/ui.js          DOM バインディング
 ```
 
-## フォトグラメトリモデルへの差し替え
+## モデル生成(Meshy)
 
-Meshy 等で生成した GLB に差し替える場合は、`js/main.js` の `buildLantern()` 呼び出しを
-`GLTFLoader` での読み込みに置き換えてください。デカール機能を使うには、火袋メッシュが
-円筒状 UV(u=周方向, v=高さ方向)を持っている必要があります。
+`assets/lantern.glb` は参考写真4枚(`ref/`、非公開)から Meshy Multi-Image-to-3D で生成した
+30万ポリゴンモデル(Draco圧縮済み)。再生成する場合:
+
+```bash
+# 300k ポリゴンで生成
+MESHY_POLYCOUNT=300000 python tools/meshy_generate.py ref assets/lantern-hq.glb
+# Draco 圧縮して配置
+npx @gltf-transform/cli draco assets/lantern-hq.glb assets/lantern.glb
+```
+
+APIキーは `C:\Users\kanet\meshy_key.txt` から読み込みます(リポジトリには含めません)。
+
+### デカール投影プロキシ
+
+`assets/lantern-proxy.glb` は同モデルを約8%に間引いたジオメトリのみのメッシュで、
+デカールのドラッグ中のリアルタイム投影とレイキャストに使用します(確定時は本体へ高品質投影)。
+モデルを再生成したら `tools/make_proxy.mjs` 相当の簡約化で作り直してください。
+GLB が無い場合はプロシージャルモデル(`js/lantern.js`)にフォールバックします。
+生成モデルの正面方向は個体差があるため `js/main.js` の `GLB_FRONT_ROT` で補正します。

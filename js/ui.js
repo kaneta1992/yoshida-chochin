@@ -94,6 +94,9 @@ export class UI {
     this.$('#dRot').addEventListener('input', (e) => {
       this.app.updateSelectedDecal({ roll: parseFloat(e.target.value) });
     });
+    // スライダーを離したら本体へ高品質投影
+    ['#dScale', '#dRot'].forEach((s) =>
+      this.$(s).addEventListener('change', () => this.app.commitSelectedDecal()));
     this.$('#dOpacity').addEventListener('input', (e) => {
       this.app.updateSelectedDecal({ opacity: parseFloat(e.target.value) });
     });
