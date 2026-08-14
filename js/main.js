@@ -671,15 +671,23 @@ class App {
       const inkMask = this.bodyMat.emissiveMap || this.bodyMat.map;
       mat.onBeforeCompile = (shader) => {
         shader.uniforms.inkMask = { value: inkMask };
+        shader.uniforms.uPulse = { value: 0 }; // 選択中の明滅(0=通常, 1=消灯)
         shader.vertexShader = shader.vertexShader
           .replace('#include <common>', 'attribute vec2 uvBody;\nvarying vec2 vUvBody;\n#include <common>')
           .replace('#include <uv_vertex>', '#include <uv_vertex>\nvUvBody = uvBody;');
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', 'uniform sampler2D inkMask;\nvarying vec2 vUvBody;\n#include <common>')
+          .replace('#include <common>', 'uniform sampler2D inkMask;\nuniform float uPulse;\nvarying vec2 vUvBody;\n#include <common>')
           .replace('#include <map_fragment>', `#include <map_fragment>
-            vec3 inkTex = texture2D( inkMask, vUvBody ).rgb;
-            float paper = smoothstep( 0.012, 0.05, dot( inkTex, vec3( 0.333 ) ) );
-            diffuseColor.rgb = mix( vec3( 1.0 ), diffuseColor.rgb, paper );`);
+            // 4タップの max で断片境界の1px級の黒テクセル(穴)を埋める
+            float o = 1.0 / 1024.0;
+            float mL = dot( texture2D( inkMask, vUvBody + vec2( -o, 0.0 ) ).rgb, vec3( 0.333 ) );
+            float mR = dot( texture2D( inkMask, vUvBody + vec2(  o, 0.0 ) ).rgb, vec3( 0.333 ) );
+            float mD = dot( texture2D( inkMask, vUvBody + vec2( 0.0, -o ) ).rgb, vec3( 0.333 ) );
+            float mU = dot( texture2D( inkMask, vUvBody + vec2( 0.0,  o ) ).rgb, vec3( 0.333 ) );
+            float inkLum = max( max( mL, mR ), max( mD, mU ) );
+            float paper = smoothstep( 0.012, 0.05, inkLum );
+            diffuseColor.rgb = mix( vec3( 1.0 ), diffuseColor.rgb, paper * ( 1.0 - uPulse ) );`);
+        mat.userData.shader = shader;
       };
       return mat;
     }
@@ -919,13 +927,18 @@ class App {
     this.bodyMat.emissiveIntensity = emiss;
     this.glowPool.material.opacity = m * (0.36 + 0.07 * flick);
 
-    // デカールも紙と一緒に光る + 選択中はわずかに明滅(乗算モードは対象外)
+    // デカールも紙と一緒に光る + 選択中はわずかに明滅
     for (const [id, mesh] of this.decalMeshes) {
-      if (mesh.userData.under) continue;
-      mesh.material.emissiveIntensity = emiss * 0.9;
       const d = this.state.decals.find((x) => x.id === id);
       if (!d) continue;
       const selected = id === this.state.selectedDecal && this.state.decalTabOpen;
+      if (mesh.userData.under) {
+        // 乗算モードはシェーダーの uniform で明滅させる
+        const sh = mesh.material.userData.shader;
+        if (sh) sh.uniforms.uPulse.value = selected ? 0.3 + 0.3 * Math.sin(t * 5.5) : 0;
+        continue;
+      }
+      mesh.material.emissiveIntensity = emiss * 0.9;
       mesh.material.opacity = selected
         ? d.opacity * (0.72 + 0.28 * Math.sin(t * 5.5))
         : d.opacity;

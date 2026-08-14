@@ -286,6 +286,21 @@ for (const mat of doc.getRoot().listMaterials()) {
       }
     }
   }
+  // UVガター(アトラス断片の隙間)を被覆領域からフラッド充填する。
+  // 黒いガターが残っているとデカールのUV外挿やミップマップが黒を拾い、
+  // 「墨の下」デカールに穴あきノイズが出る
+  {
+    const covE = new Uint8Array(eN);
+    for (let y = 0; y < EH; y++) {
+      for (let x = 0; x < EW; x++) {
+        const sx = Math.min(S - 1, (x * S / EW) | 0);
+        const sy = Math.min(S - 1, (y * S / EH) | 0);
+        covE[y * EW + x] = tex3d.cov[sy * S + sx];
+      }
+    }
+    padImageRGB(ed, covE, EW, EH);
+  }
+
   // PNG(可逆)で保存: JPEG圧縮ノイズがあると墨内部が完全な黒にならず、
   // デカールの墨マスク判定が誤動作する
   const emisPng = await emis.getBufferAsync(Jimp.MIME_PNG);
@@ -303,6 +318,46 @@ await io.write(outPath, doc);
 console.log('written:', outPath);
 
 // ---------- helpers ----------
+
+// RGBA画像の未被覆画素をBFSで最近傍の被覆値へ充填
+function padImageRGB(data, cov, W, H) {
+  const covered = Uint8Array.from(cov);
+  const queue = new Int32Array(W * H);
+  let qh = 0, qt = 0;
+  const tryEnqueue = (i) => {
+    if (covered[i] !== 0) return;
+    covered[i] = 2; // queued
+    queue[qt++] = i;
+  };
+  for (let i = 0; i < W * H; i++) {
+    if (covered[i]) continue;
+    const x = i % W, y = (i / W) | 0;
+    if ((x > 0 && covered[i - 1] === 1) || (x < W - 1 && covered[i + 1] === 1) ||
+        (y > 0 && covered[i - W] === 1) || (y < H - 1 && covered[i + W] === 1)) {
+      tryEnqueue(i);
+    }
+  }
+  while (qh < qt) {
+    const i = queue[qh++];
+    const x = i % W, y = (i / W) | 0;
+    let r = 0, g = 0, b = 0, n = 0;
+    const nbs = [
+      x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1,
+      y > 0 ? i - W : -1, y < H - 1 ? i + W : -1,
+    ];
+    for (const nb of nbs) {
+      if (nb >= 0 && covered[nb] === 1) {
+        r += data[nb * 4]; g += data[nb * 4 + 1]; b += data[nb * 4 + 2]; n++;
+      }
+    }
+    if (n > 0) {
+      data[i * 4] = r / n; data[i * 4 + 1] = g / n; data[i * 4 + 2] = b / n;
+    }
+    covered[i] = 1;
+    for (const nb of nbs) if (nb >= 0) tryEnqueue(nb);
+  }
+}
+
 function boxBlurU8(src, W, H, r) {
   const integ = new Float64Array((W + 1) * (H + 1));
   for (let y = 0; y < H; y++) {
