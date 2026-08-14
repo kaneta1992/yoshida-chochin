@@ -76,6 +76,8 @@ def main():
         "enable_pbr": True,
         "topology": "triangle",
         "target_polycount": polycount,
+        # 注意: texture_prompt を付けると写真の意匠を無視した
+        # テクスチャが生成されるため使用しない
     }
 
     try:
