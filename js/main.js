@@ -1,7 +1,8 @@
 // ============================================================
 // main.js — 吉田提灯 3D ビューア
 // PBR + IBL(PMREM環境マップによるGI近似) + ACES + Bloom
-// デカールは DecalGeometry による3D投影(GLBモデルにも対応)
+// デカールは本体シェーダー内のプロジェクション合成
+// (別メッシュを重ねないため、穴・ちぎれ・Zファイトが構造的に起きない)
 // ============================================================
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -10,7 +11,6 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
@@ -38,9 +38,49 @@ const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに�
 // モデル更新時は ASSET_VER を上げる(GitHub Pages のキャッシュ対策)
 const ASSET_VER = '2026-08-15c';
 const GLB_PATH = `assets/lantern.glb?v=${ASSET_VER}`;
-const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // デカール投影・レイキャスト用
-const DECAL_LIFT_FINAL = 0.0018; // 本体投影時に表面から浮かせる量
-const DECAL_LIFT_PROXY = 0.004;  // プロキシ投影時(ドラッグ中)の浮かせ量
+const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // レイキャスト用の軽量メッシュ
+
+// ---------- シェーダープロジェクションデカール ----------
+const MAX_DECALS = 8;      // 同時貼付数の上限(シェーダーの固定ループ)
+const ATLAS_SIZE = 2048;   // 全デカール画像を1枚に収めるアトラス
+const ATLAS_CELL = 512;    // 1デカールあたりのセル
+const ATLAS_PAD = 8;       // セル間のにじみ防止マージン
+
+const DECAL_DECL = /* glsl */ `
+#define MAX_DECALS ${MAX_DECALS}
+uniform sampler2D uDecalAtlas;
+uniform mat4 uDecalMat[MAX_DECALS];
+uniform vec4 uDecalRect[MAX_DECALS];
+uniform vec4 uDecalPrm[MAX_DECALS];  // x:不透明度 y:墨の下 z:有効 w:選択明滅
+uniform vec3 uDecalDir[MAX_DECALS];  // 投影方向(オブジェクト空間)
+varying vec3 vObjPos;
+varying vec3 vObjNormal;
+vec3 gLanternBase = vec3(1.0);
+`;
+
+const DECAL_APPLY = /* glsl */ `
+{
+  float lanternLum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+  float paperMask = smoothstep(0.05, 0.18, lanternLum); // 墨=0 / 和紙=1(リニア輝度)
+  for (int i = 0; i < MAX_DECALS; i++) {
+    if (uDecalPrm[i].z < 0.5) continue;
+    vec3 dp = (uDecalMat[i] * vec4(vObjPos, 1.0)).xyz;
+    if (abs(dp.x) > 0.5 || abs(dp.y) > 0.5 || abs(dp.z) > 0.5) continue;
+    if (dot(normalize(vObjNormal), uDecalDir[i]) > -0.15) continue; // 裏面へは投影しない
+    vec2 duv = uDecalRect[i].xy + vec2(dp.x + 0.5, 0.5 - dp.y) * uDecalRect[i].zw;
+    vec4 dc = texture2D(uDecalAtlas, duv);
+    float a = dc.a * uDecalPrm[i].x * (1.0 - uDecalPrm[i].w);
+    if (uDecalPrm[i].y > 0.5) {
+      // 墨の下: 和紙の部分にだけ乗算で印刷(墨は上から覆う)
+      diffuseColor.rgb *= mix(vec3(1.0), mix(vec3(1.0), dc.rgb, a), paperMask);
+    } else {
+      // 墨の上: 通常合成(シールを貼った見た目)
+      diffuseColor.rgb = mix(diffuseColor.rgb, dc.rgb, a);
+    }
+  }
+  gLanternBase = diffuseColor.rgb;
+}
+`;
 
 class App {
   constructor() {
@@ -58,9 +98,7 @@ class App {
     this.modeTarget = 0;
     this.viewShift = 0;        // パネル表示中のビュー上方シフト(px)
     this.viewShiftTarget = 0;
-    this.decalMeshes = new Map();   // id -> Mesh
-    this.decalRebuildId = null;     // 再投影待ちのデカールID
-    this.lastDecalBuild = 0;
+    this.initDecalSystem();
     this.clock = new THREE.Clock();
     this.fpsEMA = 16;
     this.usingGLB = false;
@@ -74,14 +112,11 @@ class App {
     this.applyQuality();
     this.tryLoadGLB();
 
-    // 共有リンクから復元
+    // 共有リンクから復元(デフォルトは昼モード)
     if (location.hash.startsWith('#p=')) {
       decodeShareHash(location.hash)
         .then((data) => data && applyState(this, data))
         .catch((e) => console.warn('share decode failed', e));
-    } else {
-      // 初期は夜モードでドラマチックに
-      setTimeout(() => this.setMode('night'), 900);
     }
 
     window.addEventListener('resize', () => this.onResize());
@@ -249,18 +284,12 @@ class App {
       const gltf = await loader.loadAsync(GLB_PATH);
       this.swapToGLB(gltf.scene);
       console.info('GLB model loaded');
-      // デカール用の墨マスク(1=紙/0=墨。任意)
-      new THREE.TextureLoader().load(`assets/inkmask.png?v=${ASSET_VER}`, (tex) => {
-        tex.colorSpace = THREE.NoColorSpace;
-        this.inkMaskTex = tex;
-        this.rebuildAllDecals();
-      }, undefined, () => { /* 無ければアルベド輝度で代用 */ });
-      // デカール用プロキシ(高ポリゴンモデルの投影負荷対策・任意)
+      // レイキャスト用プロキシ(高ポリゴンモデルの当たり判定負荷対策・任意)
       try {
         const proxy = await loader.loadAsync(PROXY_PATH);
         this.attachProxy(proxy.scene);
-        console.info('decal proxy loaded');
-      } catch { /* プロキシ無しなら本体に直接投影 */ }
+        console.info('raycast proxy loaded');
+      } catch { /* プロキシ無しなら本体へ直接レイキャスト */ }
     } catch (e) {
       console.info('GLB not available, using procedural model');
     }
@@ -292,10 +321,8 @@ class App {
     });
     if (!bodyMesh) return;
 
-    // 既存のプロシージャル形状を除去(デカールは残す)
-    const keep = new Set([...this.decalMeshes.values()]);
+    // 既存のプロシージャル形状を除去
     for (const child of [...this.lanternGroup.children]) {
-      if (keep.has(child)) continue;
       this.lanternGroup.remove(child);
       child.traverse?.((o) => {
         o.geometry?.dispose?.();
@@ -320,7 +347,8 @@ class App {
     this.bodyMat = mat;
     this.usingGLB = true;
 
-    // デカールを新しいボディに再投影
+    // デカールのプロジェクション合成を本体シェーダーに組み込む
+    this.setupBodyDecals(mat);
     this.rebuildAllDecals();
   }
 
@@ -442,6 +470,9 @@ class App {
   }
 
   async addDecal(file) {
+    if (this.state.decals.length >= MAX_DECALS) {
+      throw new Error(`デカールは最大 ${MAX_DECALS} 枚までです`);
+    }
     const dataURL = await fileToDataURL(file, 768);
     const id = 'd' + Math.random().toString(36).slice(2, 9);
     await this.textures.registerImage(id, dataURL);
@@ -458,7 +489,7 @@ class App {
     if (hit) this.hitToLocal(hit, d);
     this.state.decals.push(d);
     this.state.selectedDecal = id;
-    this.buildDecalMesh(d);
+    this.rebuildAllDecals();
   }
 
   // レイキャスト結果 → 提灯ローカル座標のデカール位置・法線
@@ -483,335 +514,142 @@ class App {
     }
   }
 
-  // 三角形の空間グリッド(デカール頂点 → 本体UVの対応付けに使用)
-  getTriGrid(mesh) {
-    if (mesh.userData.triGrid) return mesh.userData.triGrid;
-    const geo = mesh.geometry;
-    const pos = geo.attributes.position;
-    const uv = geo.attributes.uv;
-    if (!uv) return null;
-    const idx = geo.index;
-    const cell = 0.03;
-    const map = new Map();
-    const triCount = idx ? idx.count / 3 : pos.count / 3;
-    const getI = (t, k) => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
-    for (let t = 0; t < triCount; t++) {
-      let minX = 1e9, minY = 1e9, minZ = 1e9, maxX = -1e9, maxY = -1e9, maxZ = -1e9;
-      for (let k = 0; k < 3; k++) {
-        const i = getI(t, k);
-        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
-        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-      }
-      for (let ix = Math.floor(minX / cell); ix <= Math.floor(maxX / cell); ix++) {
-        for (let iy = Math.floor(minY / cell); iy <= Math.floor(maxY / cell); iy++) {
-          for (let iz = Math.floor(minZ / cell); iz <= Math.floor(maxZ / cell); iz++) {
-            const key = `${ix},${iy},${iz}`;
-            let arr = map.get(key);
-            if (!arr) { arr = []; map.set(key, arr); }
-            arr.push(t);
-          }
-        }
-      }
-    }
-    const grid = { cell, map, pos, uv, getI };
-    mesh.userData.triGrid = grid;
-    return grid;
+  // ---------- シェーダープロジェクションデカール ----------
+  // デカールは別メッシュではなく、本体マテリアルのフラグメントシェーダー内で
+  // 投影合成する。本体表面そのものに合成されるため、穴・ちぎれ・Zファイトは
+  // 構造的に発生せず、夜の発光(=昼のアルベド)にも自動で一致する。
+  initDecalSystem() {
+    this.atlasCanvas = document.createElement('canvas');
+    this.atlasCanvas.width = this.atlasCanvas.height = ATLAS_SIZE;
+    this.atlasCtx = this.atlasCanvas.getContext('2d');
+    this.atlasTex = new THREE.CanvasTexture(this.atlasCanvas);
+    this.atlasTex.colorSpace = THREE.SRGBColorSpace;
+    this.atlasTex.anisotropy = 4;
+    this.atlasTex.flipY = false; // シェーダー側は上原点でセルを参照する
+    this.decalSlotOf = new Map(); // decalId -> アトラススロット
+    this.decalU = {
+      uDecalAtlas: { value: this.atlasTex },
+      uDecalMat: { value: Array.from({ length: MAX_DECALS }, () => new THREE.Matrix4()) },
+      uDecalRect: { value: Array.from({ length: MAX_DECALS }, () => new THREE.Vector4()) },
+      uDecalPrm: { value: Array.from({ length: MAX_DECALS }, () => new THREE.Vector4(1, 0, 0, 0)) },
+      uDecalDir: { value: Array.from({ length: MAX_DECALS }, () => new THREE.Vector3(0, 0, 1)) },
+    };
   }
 
-  // デカール各頂点に本体メッシュのUVを対応付ける(墨マスク参照用)。
-  // 重要: デカール三角形ごとに「同一の」ソース三角形からUVを外挿する。
-  // 頂点ごとに最近傍を探すと、隣接頂点が別々のUVアトラス島に対応してしまい、
-  // 三角形内の補間がテクスチャ全域を横切ってひび状のノイズになる。
-  assignBodyUV(geo, targetMesh) {
-    const grid = this.getTriGrid(targetMesh);
-    if (!grid) return;
-    const pAttr = geo.attributes.position;
-    const out = new Float32Array(pAttr.count * 2);
-    const valid = new Float32Array(pAttr.count); // 対応付けの信頼フラグ
-    const MAX_D2 = 0.03 * 0.03; // これ以上離れた対応付けは信用しない
-    const p = new THREE.Vector3();
-    const centroid = new THREE.Vector3();
-    const tri = new THREE.Triangle();
-    const cp = new THREE.Vector3();
-    const uvA = new THREE.Vector2(), uvB = new THREE.Vector2(), uvC = new THREE.Vector2();
-    const res = new THREE.Vector2();
-    const verts = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
-
-    // DecalGeometry は非インデックスで 3 頂点 = 1 三角形
-    for (let t0 = 0; t0 < pAttr.count; t0 += 3) {
-      centroid.set(0, 0, 0);
-      for (let k = 0; k < 3; k++) {
-        verts[k].fromBufferAttribute(pAttr, t0 + k); // ワールド(rest)座標
-        targetMesh.worldToLocal(verts[k]);
-        centroid.add(verts[k]);
-      }
-      centroid.multiplyScalar(1 / 3);
-
-      // 重心の最近傍ソース三角形を1つ選ぶ
-      const cx = Math.floor(centroid.x / grid.cell);
-      const cy = Math.floor(centroid.y / grid.cell);
-      const cz = Math.floor(centroid.z / grid.cell);
-      let bestD = Infinity, bestT = -1;
-      for (let ring = 0; ring <= 1 && bestT < 0; ring++) {
-        for (let dx = -ring; dx <= ring; dx++) {
-          for (let dy = -ring; dy <= ring; dy++) {
-            for (let dz = -ring; dz <= ring; dz++) {
-              if (ring === 1 && Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) < 1) continue;
-              const arr = grid.map.get(`${cx + dx},${cy + dy},${cz + dz}`);
-              if (!arr) continue;
-              for (const t of arr) {
-                const ia = grid.getI(t, 0), ib = grid.getI(t, 1), ic = grid.getI(t, 2);
-                tri.a.fromBufferAttribute(grid.pos, ia);
-                tri.b.fromBufferAttribute(grid.pos, ib);
-                tri.c.fromBufferAttribute(grid.pos, ic);
-                tri.closestPointToPoint(centroid, cp);
-                const dd = cp.distanceToSquared(centroid);
-                if (dd < bestD) { bestD = dd; bestT = t; }
-              }
-            }
-          }
-        }
-      }
-      if (bestT < 0) continue;
-
-      // 選んだソース三角形の平面上で3頂点それぞれのUVを外挿
-      const ia = grid.getI(bestT, 0), ib = grid.getI(bestT, 1), ic = grid.getI(bestT, 2);
-      tri.a.fromBufferAttribute(grid.pos, ia);
-      tri.b.fromBufferAttribute(grid.pos, ib);
-      tri.c.fromBufferAttribute(grid.pos, ic);
-      uvA.fromBufferAttribute(grid.uv, ia);
-      uvB.fromBufferAttribute(grid.uv, ib);
-      uvC.fromBufferAttribute(grid.uv, ic);
-      const ok = bestD < MAX_D2 ? 1 : 0;
-      for (let k = 0; k < 3; k++) {
-        THREE.Triangle.getInterpolation(verts[k], tri.a, tri.b, tri.c, uvA, uvB, uvC, res);
-        out[(t0 + k) * 2] = res.x;
-        out[(t0 + k) * 2 + 1] = res.y;
-        valid[t0 + k] = ok;
-      }
-    }
-    geo.setAttribute('uvBody', new THREE.Float32BufferAttribute(out, 2));
-    geo.setAttribute('uvBodyValid', new THREE.Float32BufferAttribute(valid, 1));
+  slotRect(slot) {
+    const cells = ATLAS_SIZE / ATLAS_CELL;
+    const cx = slot % cells, cy = Math.floor(slot / cells);
+    return {
+      px: cx * ATLAS_CELL + ATLAS_PAD,
+      py: cy * ATLAS_CELL + ATLAS_PAD,
+      pw: ATLAS_CELL - ATLAS_PAD * 2,
+      ph: ATLAS_CELL - ATLAS_PAD * 2,
+      u: (cx * ATLAS_CELL + ATLAS_PAD) / ATLAS_SIZE,
+      v: (cy * ATLAS_CELL + ATLAS_PAD) / ATLAS_SIZE,
+      w: (ATLAS_CELL - ATLAS_PAD * 2) / ATLAS_SIZE,
+      h: (ATLAS_CELL - ATLAS_PAD * 2) / ATLAS_SIZE,
+    };
   }
 
-  // final=true: 本体メッシュへ投影(高品質・確定時)
-  // final=false: 軽量プロキシへ投影(ドラッグ中のプレビュー)
-  buildDecalMesh(d, final = true) {
-    const img = this.textures.images.get(d.id);
-    if (!img || !this.body) return;
-
-    const target = final ? this.body : this.decalBody;
-    const lift = final || target === this.body ? DECAL_LIFT_FINAL : DECAL_LIFT_PROXY;
-
-    this.withRestPose(() => {
-      const wp = this.lanternGroup.localToWorld(d.pos.clone());
-      const gq = this.lanternGroup.getWorldQuaternion(new THREE.Quaternion());
-      const wn = d.normal.clone().applyQuaternion(gq).normalize();
-
-      const h = this._projHelper;
-      h.position.copy(wp);
-      h.lookAt(wp.clone().add(wn));
-      h.rotateZ((d.roll * Math.PI) / 180);
-
-      const sh = d.size;
-      const sw = sh * (img.width / img.height);
-      const sz = Math.max(sw, sh);
-      const geo = new DecalGeometry(target, wp, h.rotation.clone(), new THREE.Vector3(sw, sh, sz));
-
-      // 表面から法線方向へわずかに浮かせる(骨のヒダ・プロキシ誤差との Z ファイト防止)
-      const pAttr = geo.attributes.position, nAttr = geo.attributes.normal;
-      for (let i = 0; i < pAttr.count; i++) {
-        pAttr.setXYZ(
-          i,
-          pAttr.getX(i) + nAttr.getX(i) * lift,
-          pAttr.getY(i) + nAttr.getY(i) * lift,
-          pAttr.getZ(i) + nAttr.getZ(i) * lift
-        );
-      }
-
-      // 「墨の下」モードは本体UVを対応付けて墨マスクを参照できるようにする
-      if (d.under) this.assignBodyUV(geo, target);
-
-      let mesh = this.decalMeshes.get(d.id);
-      if (mesh && (mesh.userData.under !== !!d.under || d.under)) {
-        // モード変更時と「下」モードは毎回マテリアルを作り直す
-        // (墨マスクのuniformを現在の本体テクスチャに揃えるため)
-        mesh.material.map?.dispose();
-        mesh.material.dispose();
-        mesh.material = this.makeDecalMaterial(d, img);
-        mesh.userData.under = !!d.under;
-      }
-      if (mesh) {
-        mesh.geometry.dispose();
-        mesh.geometry = geo;
-        // 親から一旦外してワールド基準で再配置
-        this.scene.attach(mesh);
-        mesh.position.set(0, 0, 0);
-        mesh.quaternion.identity();
-        mesh.scale.setScalar(1);
-        mesh.updateMatrixWorld(true);
-        this.lanternGroup.attach(mesh);
-        if (!d.under) mesh.material.opacity = d.opacity;
-      } else {
-        mesh = new THREE.Mesh(geo, this.makeDecalMaterial(d, img));
-        mesh.userData.under = !!d.under;
-        mesh.renderOrder = 2;
-        this.scene.add(mesh);
-        this.lanternGroup.attach(mesh);
-        this.decalMeshes.set(d.id, mesh);
-      }
-    });
-  }
-
-  // デカールのマテリアル生成
-  // 上(over): 通常合成 = 墨の上に貼ったシール
-  // 下(under): 乗算合成 = 和紙に直接印刷され、墨が上から覆う
-  makeDecalMaterial(d, img) {
-    if (d.under) {
-      const tex = this.makeUnderTexture(d, img);
-      const mat = new THREE.MeshBasicMaterial({
-        map: tex,
-        blending: THREE.MultiplyBlending,
-        transparent: true,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -4,
-        toneMapped: false, // 乗算係数にトーンマッピングを掛けない
-      });
-      // 墨マスク(専用の inkmask.png: 白=紙/黒=墨。無ければアルベド輝度で代用)
-      // を参照し、墨の上では乗算係数を 1(=無効果)へ寄せる → 透けない
-      const inkMask = this.inkMaskTex || this.bodyMat.map;
-      mat.onBeforeCompile = (shader) => {
-        shader.uniforms.inkMask = { value: inkMask };
-        shader.uniforms.uPulse = { value: 0 }; // 選択中の明滅(0=通常, 1=消灯)
-        shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', 'attribute vec2 uvBody;\nattribute float uvBodyValid;\nvarying vec2 vUvBody;\nvarying float vUvValid;\n#include <common>')
-          .replace('#include <uv_vertex>', '#include <uv_vertex>\nvUvBody = uvBody;\nvUvValid = uvBodyValid;');
+  // 本体マテリアルにデカール合成を注入する
+  setupBodyDecals(mat) {
+    const unifiedEmissive = mat.emissiveMap && mat.emissiveMap === mat.map;
+    mat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.decalU);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', 'varying vec3 vObjPos;\nvarying vec3 vObjNormal;\n#include <common>')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvObjPos = position;\nvObjNormal = normal;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', DECAL_DECL + '\n#include <common>')
+        .replace('#include <map_fragment>', '#include <map_fragment>\n' + DECAL_APPLY);
+      if (unifiedEmissive) {
+        // 夜の発光にもデカール込みの合成結果を使う(昼夜一致)
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', 'uniform sampler2D inkMask;\nuniform float uPulse;\nvarying vec2 vUvBody;\nvarying float vUvValid;\n#include <common>')
-          .replace('#include <map_fragment>', `#include <map_fragment>
-            // min 5タップで墨側へ保守的に膨張(細い筆線を消さない)。
-            // しきい値は専用マスク(0/1)とアルベド代用(紙≈0.5 linear)の両方で機能する
-            float o = 1.0 / 1024.0;
-            float mC = dot( texture2D( inkMask, vUvBody ).rgb, vec3( 0.333 ) );
-            float mL = dot( texture2D( inkMask, vUvBody + vec2( -o, 0.0 ) ).rgb, vec3( 0.333 ) );
-            float mR = dot( texture2D( inkMask, vUvBody + vec2(  o, 0.0 ) ).rgb, vec3( 0.333 ) );
-            float mD = dot( texture2D( inkMask, vUvBody + vec2( 0.0, -o ) ).rgb, vec3( 0.333 ) );
-            float mU = dot( texture2D( inkMask, vUvBody + vec2( 0.0,  o ) ).rgb, vec3( 0.333 ) );
-            float inkLum = min( mC, min( min( mL, mR ), min( mD, mU ) ) );
-            float paper = smoothstep( 0.10, 0.32, inkLum );
-            // UV対応付けに失敗した三角形は隠す側に倒す
-            paper *= step( 0.5, vUvValid );
-            diffuseColor.rgb = mix( vec3( 1.0 ), diffuseColor.rgb, paper * ( 1.0 - uPulse ) );`);
-        mat.userData.shader = shader;
-      };
-      return mat;
-    }
-    const tex = new THREE.Texture(img);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 4;
-    tex.needsUpdate = true;
-    return new THREE.MeshStandardMaterial({
-      map: tex,
-      emissive: new THREE.Color(0xffb066),
-      emissiveMap: tex,
-      emissiveIntensity: 0,
-      transparent: true,
-      opacity: d.opacity,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -4,
-      roughness: 0.62,
-      metalness: 0,
+          .replace('#include <emissivemap_fragment>', '\ttotalEmissiveRadiance *= gLanternBase;');
+      }
+    };
+    mat.customProgramCacheKey = () => 'chochin-projected-decals';
+    mat.needsUpdate = true;
+  }
+
+  // デカールの投影行列・パラメータをシェーダー uniform に反映
+  syncDecalUniforms() {
+    const U = this.decalU;
+    for (let i = 0; i < MAX_DECALS; i++) U.uDecalPrm.value[i].z = 0;
+    if (!this.body) return;
+    this.withRestPose(() => {
+      // 本体オブジェクト空間 → 提灯グループ空間(ポーズ非依存の相対変換)
+      const matBodyToGroup = new THREE.Matrix4()
+        .copy(this.lanternGroup.matrixWorld).invert()
+        .multiply(this.body.matrixWorld);
+      const matGroupToBody = matBodyToGroup.clone().invert();
+      const h = this._projHelper;
+      const P = new THREE.Matrix4();
+      for (const d of this.state.decals) {
+        const slot = this.decalSlotOf.get(d.id);
+        if (slot === undefined || slot >= MAX_DECALS) continue;
+        const img = this.textures.images.get(d.id);
+        if (!img) continue;
+        const sh = d.size;
+        const sw = sh * (img.width / img.height);
+        const sd = Math.max(sw, sh) * 0.8; // 投影の奥行き(曲面への回り込み量)
+        h.position.copy(d.pos);
+        h.lookAt(d.pos.clone().add(d.normal));
+        h.rotateZ((d.roll * Math.PI) / 180);
+        P.compose(d.pos, h.quaternion, new THREE.Vector3(sw, sh, sd));
+        U.uDecalMat.value[slot].copy(P).invert().multiply(matBodyToGroup);
+        U.uDecalDir.value[slot]
+          .copy(d.normal).negate().transformDirection(matGroupToBody);
+        const r = this.slotRect(slot);
+        U.uDecalRect.value[slot].set(r.u, r.v, r.w, r.h);
+        U.uDecalPrm.value[slot].set(d.opacity, d.under ? 1 : 0, 1, U.uDecalPrm.value[slot].w);
+      }
     });
   }
 
-  // 乗算用テクスチャ: 白地に不透明度を掛けて合成(透明部=白=乗算で不変)
-  makeUnderTexture(d, img) {
-    const cv = document.createElement('canvas');
-    cv.width = img.width; cv.height = img.height;
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.globalAlpha = d.opacity;
-    ctx.drawImage(img, 0, 0);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 4;
-    return tex;
+  // アトラスの再構築(追加・削除・復元時)+ uniform 反映
+  rebuildAllDecals() {
+    this.decalSlotOf = new Map();
+    this.atlasCtx.clearRect(0, 0, ATLAS_SIZE, ATLAS_SIZE);
+    this.state.decals.slice(0, MAX_DECALS).forEach((d, i) => {
+      this.decalSlotOf.set(d.id, i);
+      const img = this.textures.images.get(d.id);
+      if (!img) return;
+      const r = this.slotRect(i);
+      this.atlasCtx.drawImage(img, r.px, r.py, r.pw, r.ph);
+    });
+    this.atlasTex.needsUpdate = true;
+    this.syncDecalUniforms();
   }
 
-  // サイズ・回転・不透明度・重なりの編集(UI から)
+  // サイズ・回転・不透明度・重なりの編集(UI から)。
+  // すべて uniform 更新のみで即時反映(ジオメトリ再構築は不要)
   updateSelectedDecal(props) {
     const d = this.getSelectedDecal();
     if (!d) return;
     Object.assign(d, props);
-    const mesh = this.decalMeshes.get(d.id);
-    if ('under' in props) {
-      // モード切替はマテリアル再生成が必要 → 即時に本体へ再投影
-      this.decalRebuildId = null;
-      this.buildDecalMesh(d, true);
-      return;
-    }
-    if (mesh && 'opacity' in props && !('size' in props) && !('roll' in props)) {
-      if (d.under) {
-        // 乗算テクスチャは不透明度を白へのブレンドで表現するため再ベイク
-        mesh.material.map?.dispose();
-        mesh.material.map = this.makeUnderTexture(d, this.textures.images.get(d.id));
-        mesh.material.needsUpdate = true;
-      } else {
-        mesh.material.opacity = d.opacity;
-      }
-      return;
-    }
-    this.requestDecalRebuild(d.id);
+    this.syncDecalUniforms();
   }
 
-  // スライダー確定時などに本体へ高品質投影し直す
+  // 互換API(UIから呼ばれる)。uniform 同期のみ
   commitSelectedDecal() {
-    const d = this.getSelectedDecal();
-    if (!d) return;
-    this.decalRebuildId = null;
-    this.buildDecalMesh(d, true);
-  }
-
-  requestDecalRebuild(id) {
-    this.decalRebuildId = id;
+    this.syncDecalUniforms();
   }
 
   deleteSelectedDecal() {
     const id = this.state.selectedDecal;
     if (!id) return;
-    const mesh = this.decalMeshes.get(id);
-    if (mesh) {
-      mesh.removeFromParent();
-      mesh.geometry.dispose();
-      mesh.material.map?.dispose();
-      mesh.material.dispose();
-      this.decalMeshes.delete(id);
-    }
     this.state.decals = this.state.decals.filter((d) => d.id !== id);
     this.textures.removeImage(id);
     this.state.selectedDecal = null;
+    this.rebuildAllDecals();
   }
 
   clearDecals() {
-    for (const [, mesh] of this.decalMeshes) {
-      mesh.removeFromParent();
-      mesh.geometry.dispose();
-      mesh.material.map?.dispose();
-      mesh.material.dispose();
-    }
-    this.decalMeshes.clear();
     this.state.decals = [];
     this.state.selectedDecal = null;
     this.textures.images.clear();
-  }
-
-  rebuildAllDecals() {
-    for (const d of this.state.decals) this.buildDecalMesh(d);
+    this.rebuildAllDecals();
   }
 
   raycastCenter() {
@@ -849,7 +687,7 @@ class App {
       document.body.classList.add('decal-dragging');
       el.setPointerCapture(e.pointerId);
       this.hitToLocal(hit, d);
-      this.requestDecalRebuild(d.id);
+      this.syncDecalUniforms();
       e.stopImmediatePropagation();
     }, true);
 
@@ -859,7 +697,7 @@ class App {
       const d = this.getSelectedDecal();
       if (hit && d) {
         this.hitToLocal(hit, d);
-        this.requestDecalRebuild(d.id);
+        this.syncDecalUniforms(); // uniform更新のみ = 毎フレーム追従できる
       }
     });
 
@@ -869,9 +707,6 @@ class App {
       this.controls.enabled = true;
       document.body.classList.remove('decal-dragging');
       try { el.releasePointerCapture(e.pointerId); } catch { /* noop */ }
-      // ドラッグ終了時は本体へ高品質投影で確定
-      const d = this.getSelectedDecal();
-      if (d) { this.buildDecalMesh(d, true); this.decalRebuildId = null; }
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
@@ -945,21 +780,12 @@ class App {
     this.bodyMat.emissiveIntensity = emiss;
     this.glowPool.material.opacity = m * (0.36 + 0.07 * flick);
 
-    // デカールも紙と一緒に光る + 選択中はわずかに明滅
-    for (const [id, mesh] of this.decalMeshes) {
-      const d = this.state.decals.find((x) => x.id === id);
-      if (!d) continue;
-      const selected = id === this.state.selectedDecal && this.state.decalTabOpen;
-      if (mesh.userData.under) {
-        // 乗算モードはシェーダーの uniform で明滅させる
-        const sh = mesh.material.userData.shader;
-        if (sh) sh.uniforms.uPulse.value = selected ? 0.3 + 0.3 * Math.sin(t * 5.5) : 0;
-        continue;
-      }
-      mesh.material.emissiveIntensity = emiss * 0.9;
-      mesh.material.opacity = selected
-        ? d.opacity * (0.72 + 0.28 * Math.sin(t * 5.5))
-        : d.opacity;
+    // 選択中デカールの明滅(シェーダー uniform のみ)
+    for (const d of this.state.decals) {
+      const slot = this.decalSlotOf.get(d.id);
+      if (slot === undefined || slot >= MAX_DECALS) continue;
+      const selected = d.id === this.state.selectedDecal && this.state.decalTabOpen;
+      this.decalU.uDecalPrm.value[slot].w = selected ? 0.3 + 0.3 * Math.sin(t * 5.5) : 0;
     }
 
     // 吊り揺れ(デカール編集中は静止)
@@ -969,14 +795,6 @@ class App {
     } else {
       this.swayPivot.rotation.z *= 0.94;
       this.swayPivot.rotation.x *= 0.94;
-    }
-
-    // デカール再投影(ドラッグ中はプロキシへ・スロットル)
-    if (this.decalRebuildId && performance.now() - this.lastDecalBuild > 120) {
-      const d = this.state.decals.find((x) => x.id === this.decalRebuildId);
-      if (d) this.buildDecalMesh(d, false);
-      this.decalRebuildId = null;
-      this.lastDecalBuild = performance.now();
     }
 
     // パネル分のビューシフト(スムーズに追従)
