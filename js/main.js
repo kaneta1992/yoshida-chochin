@@ -17,10 +17,10 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 // 注意: JS更新時は index.html の main.js の ?v= と、この4つの ?v= を揃えて上げる
 // (GitHub Pages のキャッシュでモジュールだけ古くなる事故を防ぐ)
-import { LanternTextures } from './textures.js?v=2026-08-15f';
-import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-15f';
-import { UI } from './ui.js?v=2026-08-15f';
-import { applyState, decodeShareHash } from './presets.js?v=2026-08-15f';
+import { LanternTextures } from './textures.js?v=2026-08-16e';
+import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-16e';
+import { UI } from './ui.js?v=2026-08-16e';
+import { applyState, decodeShareHash } from './presets.js?v=2026-08-16e';
 
 // ---------- 色定義(昼 / 夜) ----------
 const SKY = {
@@ -39,6 +39,7 @@ const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシー�
 const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに要調整)
 // モデル更新時は ASSET_VER を上げる(GitHub Pages のキャッシュ対策)
 const ASSET_VER = '2026-08-15c';
+const DESIGN_VER = '2026-08-16e'; // 文字レイヤー(design*.png/json)を更新したらここを上げる
 const GLB_PATH = `assets/lantern.glb?v=${ASSET_VER}`;
 const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // レイキャスト用の軽量メッシュ
 
@@ -55,12 +56,60 @@ uniform mat4 uDecalMat[MAX_DECALS];
 uniform vec4 uDecalRect[MAX_DECALS];
 uniform vec4 uDecalPrm[MAX_DECALS];  // x:不透明度 y:墨の下 z:有効 w:選択明滅
 uniform vec3 uDecalDir[MAX_DECALS];  // 投影方向(オブジェクト空間)
+// 文字レイヤー(円筒再投影): x:大きさ y:白縁(0/1) z:縁太さ(px) w:有効
+uniform vec4 uDesignPrm;
+uniform vec4 uDesignGeoA;            // x:θ中心 y:yLo z:ySpan w:半径ゲート
+uniform vec4 uDesignGeoB;            // x:y中心(正規化) y:1/texW z:1/texH
+uniform sampler2D uDesign;           // 文字レイヤー(rgb:墨色 a:マスク)
+uniform sampler2D uPatch;            // 消去パッチ(rgb:紙色 a:マスク)
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
 vec3 gLanternBase = vec3(1.0);
+const vec2 kInkDirs[8] = vec2[8](
+  vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0),
+  vec2(0.7071, 0.7071), vec2(-0.7071, 0.7071), vec2(0.7071, -0.7071), vec2(-0.7071, -0.7071)
+);
 `;
 
 const DECAL_APPLY = /* glsl */ `
+{
+  // ---- 文字レイヤー(大きさ変更・白縁)。無効時は素通し=完全に元の見た目 ----
+  if (uDesignPrm.w > 0.5) {
+    float rCyl = length(vObjPos.xz);
+    float vN = (vObjPos.y - uDesignGeoA.y) / uDesignGeoA.z;
+    if (rCyl < uDesignGeoA.w && vN > 0.0 && vN < 1.0) {
+      float theta = atan(vObjPos.x, vObjPos.z);
+      // 1) 元の文字位置を紙で埋める(等倍座標)
+      vec2 uvP = vec2(fract((theta + 3.14159265) / 6.2831853), 1.0 - vN);
+      vec4 paperFill = texture2D(uPatch, uvP);
+      diffuseColor.rgb = mix(diffuseColor.rgb, paperFill.rgb, paperFill.a);
+      // 2) スケールした文字を描き直す(θ中心・y中心基準の等方スケール)
+      float s = max(uDesignPrm.x, 0.05);
+      float dth = mod(theta - uDesignGeoA.x + 3.14159265, 6.2831853) - 3.14159265;
+      float su = fract((uDesignGeoA.x + dth / s + 3.14159265) / 6.2831853);
+      float sv = uDesignGeoB.x + (vN - uDesignGeoB.x) / s;
+      if (sv > 0.0 && sv < 1.0) {
+        vec2 uvD = vec2(su, 1.0 - sv);
+        vec4 ink = texture2D(uDesign, uvD);
+        if (uDesignPrm.y > 0.5) {
+          // 白縁: 文字の外側だけを白く縁取る(擦れた墨の内部には出さない)
+          float aMax = 0.0;
+          for (int k = 0; k < 8; k++) {
+            vec2 stp = kInkDirs[k] * uDesignPrm.z * vec2(uDesignGeoB.y, uDesignGeoB.z);
+            vec2 o1 = uvD + stp;
+            vec2 o2 = uvD + stp * 0.5;
+            aMax = max(aMax, texture2D(uDesign, vec2(fract(o1.x), clamp(o1.y, 0.0, 1.0))).a);
+            aMax = max(aMax, texture2D(uDesign, vec2(fract(o2.x), clamp(o2.y, 0.0, 1.0))).a);
+          }
+          float outsideInk = 1.0 - smoothstep(0.10, 0.30, ink.a);
+          float edge = outsideInk * smoothstep(0.45, 0.75, aMax);
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95, 0.93, 0.885), edge * 0.95);
+        }
+        diffuseColor.rgb = mix(diffuseColor.rgb, ink.rgb, ink.a);
+      }
+    }
+  }
+}
 {
   float lanternLum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
   float paperMask = smoothstep(0.05, 0.18, lanternLum); // 墨=0 / 和紙=1(リニア輝度)
@@ -95,6 +144,8 @@ class App {
       decals: [],          // {id, name, image, pos:V3, normal:V3, roll, size, opacity}
       selectedDecal: null,
       decalTabOpen: false,
+      // 文字レイヤー(等倍+白縁オフなら素通し=完全に元の見た目)
+      designFx: { scale: 1, outline: false, outlineW: 6 },
     };
     this.modeT = 0;
     this.modeTarget = 0;
@@ -286,6 +337,7 @@ class App {
       const gltf = await loader.loadAsync(GLB_PATH);
       this.swapToGLB(gltf.scene);
       console.info('GLB model loaded');
+      this.tryLoadDesignLayer();
       // レイキャスト用プロキシ(高ポリゴンモデルの当たり判定負荷対策・任意)
       try {
         const proxy = await loader.loadAsync(PROXY_PATH);
@@ -535,7 +587,50 @@ class App {
       uDecalRect: { value: Array.from({ length: MAX_DECALS }, () => new THREE.Vector4()) },
       uDecalPrm: { value: Array.from({ length: MAX_DECALS }, () => new THREE.Vector4(1, 0, 0, 0)) },
       uDecalDir: { value: Array.from({ length: MAX_DECALS }, () => new THREE.Vector3(0, 0, 1)) },
+      uDesignPrm: { value: new THREE.Vector4(1, 0, 6, 0) },
+      uDesignGeoA: { value: new THREE.Vector4(0, 0, 1, 10) },
+      uDesignGeoB: { value: new THREE.Vector4(0.5, 1 / 2048, 1 / 1024, 0) },
+      uDesign: { value: null },
+      uPatch: { value: null },
     };
+  }
+
+  // 文字レイヤー(大きさ / 白縁)の更新。uniform のみ = 即時反映・即時復元。
+  // 等倍かつ白縁オフのときはレイヤーを無効化し、元のテクスチャを素通しする
+  setDesignFx(props) {
+    Object.assign(this.state.designFx, props);
+    const f = this.state.designFx;
+    const active = this.designReady && (Math.abs(f.scale - 1) > 0.001 || f.outline);
+    this.decalU.uDesignPrm.value.set(f.scale, f.outline ? 1 : 0, f.outlineW, active ? 1 : 0);
+  }
+
+  // 文字レイヤーのテクスチャとメタ情報を読み込む
+  async tryLoadDesignLayer() {
+    try {
+      const meta = await (await fetch(`assets/design-meta.json?v=${DESIGN_VER}`)).json();
+      const loader = new THREE.TextureLoader();
+      const load = (url) => new Promise((res, rej) => loader.load(url, res, undefined, rej));
+      const [design, patch] = await Promise.all([
+        load(`assets/design.png?v=${DESIGN_VER}`),
+        load(`assets/design-patch.png?v=${DESIGN_VER}`),
+      ]);
+      for (const t of [design, patch]) {
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.flipY = false;
+        t.wrapS = THREE.RepeatWrapping; // θ方向は周期
+        t.anisotropy = 4;
+        t.needsUpdate = true;
+      }
+      this.decalU.uDesign.value = design;
+      this.decalU.uPatch.value = patch;
+      this.decalU.uDesignGeoA.value.set(meta.thetaC, meta.yLo, meta.ySpan, meta.rMax);
+      this.decalU.uDesignGeoB.value.set(meta.ycN, 1 / meta.texW, 1 / meta.texH, 0);
+      this.designReady = true;
+      this.setDesignFx({});
+      console.info('design layer loaded');
+    } catch (e) {
+      console.info('design layer not available', e);
+    }
   }
 
   slotRect(slot) {

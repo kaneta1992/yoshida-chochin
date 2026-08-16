@@ -139,6 +139,21 @@
         <button data-q="high">高</button>
       </div>
     </div>
+    <h2 class="panel-title" style="margin-top: 18px;">文字の調整</h2>
+    <p class="panel-note">「吉」の文字の大きさを変えたり、白い縁取りを付けられます。大きさ100%・縁取りオフに戻せば、完全に元の見た目に戻ります。</p>
+    <div class="slider-row">
+      <span>大きさ</span>
+      <input type="range" id="designScale" min="0.70" max="1.15" step="0.01" value="1">
+    </div>
+    <label class="row switch-row">
+      <span>白縁取り</span>
+      <input type="checkbox" id="designOutline">
+      <span class="switch"></span>
+    </label>
+    <div class="slider-row">
+      <span>縁の太さ</span>
+      <input type="range" id="designOutlineW" min="2" max="14" step="0.5" value="6">
+    </div>
     <button id="btnResetCam" class="btn ghost wide">カメラをリセット</button>
   </div>
 
@@ -198,6 +213,6 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script type="module" src="js/main.js?v=2026-08-15f"></script>
+<script type="module" src="js/main.js?v=2026-08-16e"></script>
 </body>
 </html>

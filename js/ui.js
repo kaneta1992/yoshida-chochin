@@ -1,7 +1,7 @@
 ﻿// ============================================================
 // ui.js — DOM UI とアプリ状態のバインディング
 // ============================================================
-import * as P from './presets.js?v=2026-08-15f';
+import * as P from './presets.js?v=2026-08-16e';
 
 export class UI {
   constructor(app) {
@@ -136,6 +136,17 @@ export class UI {
       });
     });
     this.$('#btnResetCam').addEventListener('click', () => this.app.resetCamera());
+
+    // 文字レイヤー(大きさ / 白縁)
+    this.$('#designScale').addEventListener('input', (e) => {
+      this.app.setDesignFx({ scale: parseFloat(e.target.value) });
+    });
+    this.$('#designOutline').addEventListener('change', (e) => {
+      this.app.setDesignFx({ outline: e.target.checked });
+    });
+    this.$('#designOutlineW').addEventListener('input', (e) => {
+      this.app.setDesignFx({ outlineW: parseFloat(e.target.value) });
+    });
   }
 
   // ---------- デカール ----------
@@ -340,6 +351,9 @@ export class UI {
     this.$('#optAutoRotate').checked = s.autoRotate;
     this.$('#optSway').checked = s.sway;
     this.$('#optBloom').checked = s.bloomEnabled;
+    this.$('#designScale').value = s.designFx.scale;
+    this.$('#designOutline').checked = s.designFx.outline;
+    this.$('#designOutlineW').value = s.designFx.outlineW;
     this.renderDecalList();
   }
 }
