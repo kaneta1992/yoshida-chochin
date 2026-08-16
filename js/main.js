@@ -17,10 +17,10 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 // 注意: JS更新時は index.html の main.js の ?v= と、この4つの ?v= を揃えて上げる
 // (GitHub Pages のキャッシュでモジュールだけ古くなる事故を防ぐ)
-import { LanternTextures } from './textures.js?v=2026-08-16e';
-import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-16e';
-import { UI } from './ui.js?v=2026-08-16e';
-import { applyState, decodeShareHash } from './presets.js?v=2026-08-16e';
+import { LanternTextures } from './textures.js?v=2026-08-16g';
+import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-16g';
+import { UI } from './ui.js?v=2026-08-16g';
+import { applyState, decodeShareHash } from './presets.js?v=2026-08-16g';
 
 // ---------- 色定義(昼 / 夜) ----------
 const SKY = {
@@ -39,7 +39,7 @@ const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシー�
 const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに要調整)
 // モデル更新時は ASSET_VER を上げる(GitHub Pages のキャッシュ対策)
 const ASSET_VER = '2026-08-15c';
-const DESIGN_VER = '2026-08-16e'; // 文字レイヤー(design*.png/json)を更新したらここを上げる
+const DESIGN_VER = '2026-08-16g'; // 文字レイヤー(design*.png/json)を更新したらここを上げる
 const GLB_PATH = `assets/lantern.glb?v=${ASSET_VER}`;
 const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // レイキャスト用の軽量メッシュ
 
@@ -62,13 +62,12 @@ uniform vec4 uDesignGeoA;            // x:θ中心 y:yLo z:ySpan w:半径ゲー�
 uniform vec4 uDesignGeoB;            // x:y中心(正規化) y:1/texW z:1/texH
 uniform sampler2D uDesign;           // 文字レイヤー(rgb:墨色 a:マスク)
 uniform sampler2D uPatch;            // 消去パッチ(rgb:紙色 a:マスク)
+uniform sampler2D uDesignSdf;        // 墨の外側距離(0..1 = 0..sdfMax テクセル)
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
 vec3 gLanternBase = vec3(1.0);
-const vec2 kInkDirs[8] = vec2[8](
-  vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0),
-  vec2(0.7071, 0.7071), vec2(-0.7071, 0.7071), vec2(0.7071, -0.7071), vec2(-0.7071, -0.7071)
-);
+// 白縁ぶんの加算分。夜の発光には(ほぼ)含めない = 縁だけが強く光るのを防ぐ
+vec3 gOutlineAdd = vec3(0.0);
 `;
 
 const DECAL_APPLY = /* glsl */ `
@@ -92,18 +91,14 @@ const DECAL_APPLY = /* glsl */ `
         vec2 uvD = vec2(su, 1.0 - sv);
         vec4 ink = texture2D(uDesign, uvD);
         if (uDesignPrm.y > 0.5) {
-          // 白縁: 文字の外側だけを白く縁取る(擦れた墨の内部には出さない)
-          float aMax = 0.0;
-          for (int k = 0; k < 8; k++) {
-            vec2 stp = kInkDirs[k] * uDesignPrm.z * vec2(uDesignGeoB.y, uDesignGeoB.z);
-            vec2 o1 = uvD + stp;
-            vec2 o2 = uvD + stp * 0.5;
-            aMax = max(aMax, texture2D(uDesign, vec2(fract(o1.x), clamp(o1.y, 0.0, 1.0))).a);
-            aMax = max(aMax, texture2D(uDesign, vec2(fract(o2.x), clamp(o2.y, 0.0, 1.0))).a);
-          }
+          // 白縁: 墨の外側距離場から一定幅を白く抜く(1タップなので
+          // どれだけ太くしても星形にならず輪郭が滑らか)
+          float dist = texture2D(uDesignSdf, uvD).r * uDesignGeoB.w;
           float outsideInk = 1.0 - smoothstep(0.10, 0.30, ink.a);
-          float edge = outsideInk * smoothstep(0.45, 0.75, aMax);
-          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.95, 0.93, 0.885), edge * 0.95);
+          float edge = outsideInk * (1.0 - smoothstep(uDesignPrm.z - 1.0, uDesignPrm.z + 1.0, dist));
+          vec3 pre = diffuseColor.rgb;
+          diffuseColor.rgb = mix(pre, vec3(0.95, 0.93, 0.885), edge * 0.95);
+          gOutlineAdd = diffuseColor.rgb - pre;
         }
         diffuseColor.rgb = mix(diffuseColor.rgb, ink.rgb, ink.a);
       }
@@ -129,7 +124,9 @@ const DECAL_APPLY = /* glsl */ `
       diffuseColor.rgb = mix(diffuseColor.rgb, dc.rgb, a);
     }
   }
-  gLanternBase = diffuseColor.rgb;
+  // 白縁は塗料ではなく「紙の抜き」なので、夜は紙とほぼ同じ明るさで光らせる
+  // (白縁ぶんの加算を発光から差し引く。残す2割は縁が夜も薄く見えるぶん)
+  gLanternBase = max(vec3(0.0), diffuseColor.rgb - gOutlineAdd * 0.8);
 }
 `;
 
@@ -145,7 +142,7 @@ class App {
       selectedDecal: null,
       decalTabOpen: false,
       // 文字レイヤー(等倍+白縁オフなら素通し=完全に元の見た目)
-      designFx: { scale: 1, outline: false, outlineW: 6 },
+      designFx: { scale: 1, outline: false, outlineW: 8 },
     };
     this.modeT = 0;
     this.modeTarget = 0;
@@ -592,6 +589,7 @@ class App {
       uDesignGeoB: { value: new THREE.Vector4(0.5, 1 / 2048, 1 / 1024, 0) },
       uDesign: { value: null },
       uPatch: { value: null },
+      uDesignSdf: { value: null },
     };
   }
 
@@ -610,21 +608,25 @@ class App {
       const meta = await (await fetch(`assets/design-meta.json?v=${DESIGN_VER}`)).json();
       const loader = new THREE.TextureLoader();
       const load = (url) => new Promise((res, rej) => loader.load(url, res, undefined, rej));
-      const [design, patch] = await Promise.all([
+      const [design, patch, sdf] = await Promise.all([
         load(`assets/design.png?v=${DESIGN_VER}`),
         load(`assets/design-patch.png?v=${DESIGN_VER}`),
+        load(`assets/design-sdf.png?v=${DESIGN_VER}`),
       ]);
-      for (const t of [design, patch]) {
+      for (const t of [design, patch, sdf]) {
         t.colorSpace = THREE.SRGBColorSpace;
         t.flipY = false;
         t.wrapS = THREE.RepeatWrapping; // θ方向は周期
         t.anisotropy = 4;
         t.needsUpdate = true;
       }
+      // 距離場は輝度そのものが数値なので sRGB 変換をかけない
+      sdf.colorSpace = THREE.NoColorSpace;
       this.decalU.uDesign.value = design;
       this.decalU.uPatch.value = patch;
+      this.decalU.uDesignSdf.value = sdf;
       this.decalU.uDesignGeoA.value.set(meta.thetaC, meta.yLo, meta.ySpan, meta.rMax);
-      this.decalU.uDesignGeoB.value.set(meta.ycN, 1 / meta.texW, 1 / meta.texH, 0);
+      this.decalU.uDesignGeoB.value.set(meta.ycN, 1 / meta.texW, 1 / meta.texH, meta.sdfMax || 96);
       this.designReady = true;
       this.setDesignFx({});
       console.info('design layer loaded');

@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // presets.js — プリセットの保存 / 復元 / 共有リンク / 入出力
 // ============================================================
 
@@ -43,7 +43,7 @@ export async function applyState(app, data) {
 
   app.setAutoRotate(!!data.autoRotate);
   app.setSway(data.sway !== false);
-  app.setDesignFx(data.designFx || { scale: 1, outline: false, outlineW: 6 });
+  app.setDesignFx(data.designFx || { scale: 1, outline: false, outlineW: 8 });
   app.setMode(data.mode === 'night' ? 'night' : 'day', true);
 
   if (data.camera) {

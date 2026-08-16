@@ -241,6 +241,56 @@ for (let i = 0; i < DW * DH; i++) {
 }
 console.log('ink mask cells:', maskCells, ' soft edge cells:', softCells);
 
+// ---------- 白縁用の外側距離場(SDF) ----------
+// 多方向タップは太い縁で星形に破綻するため、墨の外側距離を焼いておき
+// ランタイムは1タップで任意の太さの縁を滑らかに描く。内側の抜き(口など)
+// にも正しく縁が付くよう、穴埋め前の inkMask を種にする。
+const SDF_MAX = 96; // テクセル(これ以上は飽和)
+let rSum = 0, rN = 0;
+for (let i = 0; i < DW * DH; i++) if (inkMask[i] && rBuf[i] > 0) { rSum += rBuf[i]; rN++; }
+const rMean = rN ? rSum / rN : (R_MIN + R_MAX) / 2;
+// θ方向とy方向でテクセルの実寸が違うので重み付けする
+const wy = (ySpan / DH) / ((2 * Math.PI * rMean) / DW);
+const wd = Math.hypot(1, wy);
+// 種は小島を強めに除去する。数十テクセルの汚れでも、太い縁を付けると
+// 紙の上に大きな白い斑点として拡大されてしまうため
+const sdfSeed = Uint8Array.from(inkMask);
+removeIslands(sdfSeed, DW, DH, 800);
+const sdf = new Float32Array(DW * DH);
+const BIG = 1e9;
+for (let i = 0; i < DW * DH; i++) sdf[i] = sdfSeed[i] ? 0 : BIG;
+const relax = (i, j, w) => { if (sdf[j] + w < sdf[i]) sdf[i] = sdf[j] + w; };
+for (let y = 0; y < DH; y++) {
+  for (let x = 0; x < DW; x++) {
+    const i = y * DW + x, xl = (x - 1 + DW) % DW, xr = (x + 1) % DW;
+    relax(i, y * DW + xl, 1);
+    if (y > 0) {
+      relax(i, (y - 1) * DW + x, wy);
+      relax(i, (y - 1) * DW + xl, wd);
+      relax(i, (y - 1) * DW + xr, wd);
+    }
+  }
+}
+for (let y = DH - 1; y >= 0; y--) {
+  for (let x = DW - 1; x >= 0; x--) {
+    const i = y * DW + x, xl = (x - 1 + DW) % DW, xr = (x + 1) % DW;
+    relax(i, y * DW + xr, 1);
+    if (y < DH - 1) {
+      relax(i, (y + 1) * DW + x, wy);
+      relax(i, (y + 1) * DW + xr, wd);
+      relax(i, (y + 1) * DW + xl, wd);
+    }
+  }
+}
+const sdfImg = await Jimp.create(DW, DH, 0x000000ff);
+const sd = sdfImg.bitmap.data;
+for (let i = 0; i < DW * DH; i++) {
+  const v = Math.round(Math.min(1, sdf[i] / SDF_MAX) * 255);
+  sd[i * 4] = sd[i * 4 + 1] = sd[i * 4 + 2] = v;
+  sd[i * 4 + 3] = 255;
+}
+console.log('sdf: rMean', rMean.toFixed(3), 'wy', wy.toFixed(3), 'max', SDF_MAX);
+
 // ---------- 紙パッチ: 行ごとに θ 方向へ補間(骨の縞を保つ) ----------
 const patch = await Jimp.create(DW, DH, 0x00000000);
 const pd = patch.bitmap.data;
@@ -328,14 +378,16 @@ const meta = {
   ycN: sumV / sumA,
   rMax: R_MAX,
   texW: DW, texH: DH,
+  sdfMax: SDF_MAX,
 };
 console.log('meta:', JSON.stringify(meta));
 
 await design.writeAsync(`${outDir}/design.png`);
 await patch.writeAsync(`${outDir}/design-patch.png`);
+await sdfImg.writeAsync(`${outDir}/design-sdf.png`);
 const fs = await import('fs');
 fs.writeFileSync(`${outDir}/design-meta.json`, JSON.stringify(meta));
-console.log('written: design.png / design-patch.png / design-meta.json');
+console.log('written: design.png / design-patch.png / design-sdf.png / design-meta.json');
 
 // ---------- helpers ----------
 function dilate(mask, w, h, r) {
