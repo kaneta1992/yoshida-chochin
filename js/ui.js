@@ -1,7 +1,7 @@
 ﻿// ============================================================
 // ui.js — DOM UI とアプリ状態のバインディング
 // ============================================================
-import * as P from './presets.js?v=2026-08-16g';
+import * as P from './presets.js?v=2026-08-16j';
 
 export class UI {
   constructor(app) {
@@ -140,13 +140,31 @@ export class UI {
     // 文字レイヤー(大きさ / 白縁)
     this.$('#designScale').addEventListener('input', (e) => {
       this.app.setDesignFx({ scale: parseFloat(e.target.value) });
+      this.syncDesignLabels();
     });
     this.$('#designOutline').addEventListener('change', (e) => {
       this.app.setDesignFx({ outline: e.target.checked });
     });
     this.$('#designOutlineW').addEventListener('input', (e) => {
       this.app.setDesignFx({ outlineW: parseFloat(e.target.value) });
+      this.syncDesignLabels();
     });
+
+    // 灯り(蝋燭 / 電池灯)。色温度も配光も違うので夜の見え方が変わる
+    this.$('#segLight').querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => {
+        this.$('#segLight').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+        this.app.setLightSource(b.dataset.l);
+      });
+    });
+  }
+
+  // スライダーの値を実寸などの分かる表記で出す
+  syncDesignLabels() {
+    const f = this.app.state.designFx;
+    this.$('#designScaleVal').textContent = `${Math.round(f.scale * 100)}%`;
+    const mm = this.app.mmPerTexel ? f.outlineW * this.app.mmPerTexel : null;
+    this.$('#designOutlineWVal').textContent = mm ? `約 ${mm.toFixed(1)} mm` : `${f.outlineW}`;
   }
 
   // ---------- デカール ----------
@@ -354,6 +372,10 @@ export class UI {
     this.$('#designScale').value = s.designFx.scale;
     this.$('#designOutline').checked = s.designFx.outline;
     this.$('#designOutlineW').value = s.designFx.outlineW;
+    this.$('#segLight').querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.l === s.lightSource);
+    });
+    this.syncDesignLabels();
     this.renderDecalList();
   }
 }

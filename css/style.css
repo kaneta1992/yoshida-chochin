@@ -323,7 +323,8 @@ body.decal-dragging .panel {
 .decal-editor { margin-top: 10px; padding-top: 4px; border-top: 1px solid rgba(240,234,217,0.09); }
 
 .slider-row { display: flex; align-items: center; gap: 14px; padding: 10px 0; font-size: 12px; }
-.slider-row span { width: 62px; flex-shrink: 0; color: var(--text-dim); letter-spacing: 0.08em; }
+.slider-row span { width: 92px; flex-shrink: 0; color: var(--text-dim); letter-spacing: 0.08em; }
+.slider-val { display: block; margin-top: 2px; color: var(--gold); font-weight: 700; letter-spacing: 0.02em; }
 .slider-row input[type="range"] {
   flex: 1; -webkit-appearance: none; appearance: none;
   height: 4px; border-radius: 2px;

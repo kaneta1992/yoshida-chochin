@@ -17,10 +17,10 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 // 注意: JS更新時は index.html の main.js の ?v= と、この4つの ?v= を揃えて上げる
 // (GitHub Pages のキャッシュでモジュールだけ古くなる事故を防ぐ)
-import { LanternTextures } from './textures.js?v=2026-08-16g';
-import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-16g';
-import { UI } from './ui.js?v=2026-08-16g';
-import { applyState, decodeShareHash } from './presets.js?v=2026-08-16g';
+import { LanternTextures } from './textures.js?v=2026-08-16j';
+import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-16j';
+import { UI } from './ui.js?v=2026-08-16j';
+import { applyState, decodeShareHash } from './presets.js?v=2026-08-16j';
 
 // ---------- 色定義(昼 / 夜) ----------
 const SKY = {
@@ -39,9 +39,28 @@ const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシー�
 const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに要調整)
 // モデル更新時は ASSET_VER を上げる(GitHub Pages のキャッシュ対策)
 const ASSET_VER = '2026-08-15c';
-const DESIGN_VER = '2026-08-16g'; // 文字レイヤー(design*.png/json)を更新したらここを上げる
+const DESIGN_VER = '2026-08-16j'; // 文字レイヤー(design*.png/json)を更新したらここを上げる
 const GLB_PATH = `assets/lantern.glb?v=${ASSET_VER}`;
 const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // レイキャスト用の軽量メッシュ
+
+// ---------- 材質の光学定数 ----------
+// 反射率 R と透過率 T は別物。特に白顔料は R が高く T が低い。
+// 薄手の提灯紙と実用塗膜に対する代表値(積分球実測ではない校正初期値)。
+// 透過光は紙の中の光路が長いぶん反射光より黄色いので、色も別に持つ。
+const T_PAPER = [0.40, 0.33, 0.22];  // 裸の和紙
+const T_GOFUN = [0.15, 0.135, 0.12]; // 胡粉など白顔料 ≒ 和紙の0.38倍・脱色ぎみ
+const T_SUMI = [0.014, 0.011, 0.009];// 濃い墨 ≒ 和紙の0.035倍
+const T_STICKER = 0.02;        // 上貼りの不透明デカール
+const PAPER_REF_ALBEDO = 0.60; // きれいな和紙のリニアアルベド
+const TRANS_GAMMA = 1.8;       // 濃淡が透過へ効く強さ(Beer-Lambert 近似)
+const INNER_BOUNCE = 0.35;     // 火袋内部の相互反射(上下が暗くなりすぎるのを防ぐ)
+// 炎(蝋燭)の位置。火袋の紙は y=-0.623..0.509、半径は最大 0.475
+const FLAME_Y = -0.30;         // 下から約28%の高さ
+const FLAME_R = 0.44;          // 照度の正規化に使う代表半径
+const PAPER_Y = [-0.623, 0.509]; // 紙の y 範囲。外は口輪・弓などの不透過部品
+const FLAME_COLOR = 0xff9a4a;  // 蝋燭の炎(約1900K)
+const LED_COLOR = 0xffc99a;    // 電池灯の電球色LED(約2700K)
+const CYL_SUNLIT_FRAC = 0.32;  // 円筒の投影面積比(太陽が当たる割合の近似)
 
 // ---------- シェーダープロジェクションデカール ----------
 const MAX_DECALS = 8;      // 同時貼付数の上限(シェーダーの固定ループ)
@@ -63,11 +82,27 @@ uniform vec4 uDesignGeoB;            // x:y中心(正規化) y:1/texW z:1/texH
 uniform sampler2D uDesign;           // 文字レイヤー(rgb:墨色 a:マスク)
 uniform sampler2D uPatch;            // 消去パッチ(rgb:紙色 a:マスク)
 uniform sampler2D uDesignSdf;        // 墨の外側距離(0..1 = 0..sdfMax テクセル)
+// ---- 光学定数: 透過率は反射率とは別物として持つ ----
+// 白顔料(胡粉)は「よく反射するのに光を通しにくい」ため、アルベドを発光へ
+// 流用すると夜の明暗が実物と逆になる。材質ごとの透過率を分けて持つ。
+// 透過光は紙の中を長く通るぶん反射光より黄色い(色も別に持つ)。
+uniform vec3 uTransP;  // 裸の和紙の透過率(RGB)
+uniform vec3 uTransG;  // 胡粉など白顔料(白縁)の透過率
+uniform vec3 uTransS;  // 墨の透過率
+uniform vec4 uTransB;  // x:きれいな和紙の基準アルベド y:透過の濃度指数
+                       // z:上貼りシールの透過率 w:火袋内部の相互反射
+uniform vec4 uFlame;   // xyz:炎の位置(オブジェクト空間) w:照度の正規化係数
+uniform vec2 uBodyY;   // 火袋(紙)の y 範囲。外側は口輪・弓などの不透過部品
+uniform vec3 uFlameRad;// 炎の放射(色×強さ)。昼は 0
+uniform vec3 uInterior;// 外光が火袋内部に作る照度(昼の透け)
+uniform vec3 uBounce;  // 光る火袋から口輪・弓へ回り込む光
 varying vec3 vObjPos;
 varying vec3 vObjNormal;
 vec3 gLanternBase = vec3(1.0);
-// 白縁ぶんの加算分。夜の発光には(ほぼ)含めない = 縁だけが強く光るのを防ぐ
-vec3 gOutlineAdd = vec3(0.0);
+float gOutlineEdge = 0.0;   // 白縁(胡粉)の被覆率
+vec3 gTransCol = vec3(0.0); // 材質ごとの透過率(RGB)
+float gFlameE = 0.0;        // 炎による内面照度(正面で約1)
+float gFitting = 0.0;       // 1 = 紙ではない不透過部品
 `;
 
 const DECAL_APPLY = /* glsl */ `
@@ -96,9 +131,11 @@ const DECAL_APPLY = /* glsl */ `
           float dist = texture2D(uDesignSdf, uvD).r * uDesignGeoB.w;
           float outsideInk = 1.0 - smoothstep(0.10, 0.30, ink.a);
           float edge = outsideInk * (1.0 - smoothstep(uDesignPrm.z - 1.0, uDesignPrm.z + 1.0, dist));
-          vec3 pre = diffuseColor.rgb;
-          diffuseColor.rgb = mix(pre, vec3(0.95, 0.93, 0.885), edge * 0.95);
-          gOutlineAdd = diffuseColor.rgb - pre;
+          // 白縁は素の紙ではなく胡粉などの白顔料。反射は紙より白いが、
+          // 透過は紙より大幅に低い(夜は暗い輪として出るのが実物)
+          gOutlineEdge = edge;
+          // 胡粉の反射率は完全拡散白(1.0)より低い。0.95 は物理的にあり得ない白さ
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.82, 0.80, 0.76), gOutlineEdge);
         }
         diffuseColor.rgb = mix(diffuseColor.rgb, ink.rgb, ink.a);
       }
@@ -108,6 +145,13 @@ const DECAL_APPLY = /* glsl */ `
 {
   float lanternLum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
   float paperMask = smoothstep(0.05, 0.18, lanternLum); // 墨=0 / 和紙=1(リニア輝度)
+
+  // ---- 透過率を材質ごとに決める(デカール適用前の素の状態で分類する) ----
+  // 和紙の中の濃淡(骨・継ぎ・汚れ)は Beer-Lambert 的に反射より強く透過へ効く
+  float dens = clamp(lanternLum / uTransB.x, 0.0, 1.0);
+  vec3 trans = mix(uTransS, uTransP * pow(dens, uTransB.y), paperMask);
+  trans = mix(trans, uTransG, gOutlineEdge);   // 胡粉: 高反射・低透過
+
   for (int i = 0; i < MAX_DECALS; i++) {
     if (uDecalPrm[i].z < 0.5) continue;
     vec3 dp = (uDecalMat[i] * vec4(vObjPos, 1.0)).xyz;
@@ -117,17 +161,39 @@ const DECAL_APPLY = /* glsl */ `
     vec4 dc = texture2D(uDecalAtlas, duv);
     float a = dc.a * uDecalPrm[i].x * (1.0 - uDecalPrm[i].w);
     if (uDecalPrm[i].y > 0.5) {
-      // 墨の下: 和紙の部分にだけ乗算で印刷(墨は上から覆う)
-      diffuseColor.rgb *= mix(vec3(1.0), mix(vec3(1.0), dc.rgb, a), paperMask);
+      // 墨の下: 和紙に染み込んだ染料。反射も透過も同じ色で減衰する
+      vec3 dye = mix(vec3(1.0), mix(vec3(1.0), dc.rgb, a), paperMask);
+      diffuseColor.rgb *= dye;
+      trans *= dye;
     } else {
-      // 墨の上: 通常合成(シールを貼った見た目)
+      // 墨の上: 上から貼った不透過のシール。反射は絵柄、透過はほぼ無し
       diffuseColor.rgb = mix(diffuseColor.rgb, dc.rgb, a);
+      trans = mix(trans, vec3(uTransB.z), a);
     }
   }
-  // 白縁は塗料ではなく「紙の抜き」なので、夜は紙とほぼ同じ明るさで光らせる
-  // (白縁ぶんの加算を発光から差し引く。残す2割は縁が夜も薄く見えるぶん)
-  gLanternBase = max(vec3(0.0), diffuseColor.rgb - gOutlineAdd * 0.8);
+  gLanternBase = diffuseColor.rgb;
+  gTransCol = trans;
+
+  // ---- 炎による内面照度 E = cosθ / r^2 ----
+  // 定数項は火袋内部での相互反射。これが無いと上下が実物より暗くなりすぎる
+  vec3 fd = vObjPos - uFlame.xyz;
+  float r2 = max(dot(fd, fd), 1e-4);
+  vec3 fw = fd * inversesqrt(r2);
+  float cosI = clamp(dot(fw, normalize(vObjNormal)), 0.0, 1.0);
+  float aniso = mix(0.35, 1.0, length(fw.xz)); // 炎は真上・真下へは弱く放射する
+  gFlameE = uFlame.w * cosI * aniso / r2 + uTransB.w;
+
+  // 紙の y 範囲の外 = 口輪・弓・手さげなどの不透過部品
+  gFitting = 1.0 - step(uBodyY.x, vObjPos.y) * step(vObjPos.y, uBodyY.y);
 }
+`;
+
+// 発光 = 透過光。夜は内部の炎、昼は外光が火袋内部に作る照度が光源になる。
+// 反射(diffuse)と同じ1枚の合成結果から材質を分類しているので、昼夜で
+// デザインの見え方がずれることはない。
+const EMISSIVE_TRANSMISSION = `
+	totalEmissiveRadiance = gTransCol * (uFlameRad * gFlameE + uInterior)
+		+ gLanternBase * uBounce * gFitting;
 `;
 
 class App {
@@ -143,9 +209,11 @@ class App {
       decalTabOpen: false,
       // 文字レイヤー(等倍+白縁オフなら素通し=完全に元の見た目)
       designFx: { scale: 1, outline: false, outlineW: 8 },
+      lightSource: 'candle', // 中に入れる灯り: ろうそく / 電池灯(LED)
     };
     this.modeT = 0;
     this.modeTarget = 0;
+    this.tmpColor = new THREE.Color();
     this.viewShift = 0;        // パネル表示中のビュー上方シフト(px)
     this.viewShiftTarget = 0;
     this.initDecalSystem();
@@ -206,11 +274,15 @@ class App {
     this.controls.enablePan = false;
     this.controls.update();
 
-    // 環境マップ(IBL = GI近似)
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    // 環境マップ(IBL = GI近似)。屋外シーンなので、実際に見えている空と
+    // 地面から作る。屋内スタジオ(RoomEnvironment)を光源にすると、
+    // 発注判断に使う昼の色と陰影が屋外の実物とずれる
+    this.pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.pmrem.compileEquirectangularShader();
+    this.envDay = this.buildSkyEnv(0);
+    this.envNight = this.buildSkyEnv(1);
+    this.scene.environment = this.envDay;
     this.scene.environmentIntensity = 1.0;
-    pmrem.dispose();
 
     // 空ドーム
     this.skyCanvas = document.createElement('canvas');
@@ -256,9 +328,11 @@ class App {
     const glowCanvas = document.createElement('canvas');
     glowCanvas.width = glowCanvas.height = 256;
     const gctx = glowCanvas.getContext('2d');
+    // 真下は下輪と火皿が光を遮るので暗い。実物は輪状に明るくなる
     const gg = gctx.createRadialGradient(128, 128, 6, 128, 128, 126);
-    gg.addColorStop(0, 'rgba(255,166,80,0.95)');
-    gg.addColorStop(0.35, 'rgba(224,120,40,0.5)');
+    gg.addColorStop(0, 'rgba(120,50,15,0.0)');
+    gg.addColorStop(0.30, 'rgba(170,78,26,0.30)');
+    gg.addColorStop(0.46, 'rgba(255,166,80,0.85)');
     gg.addColorStop(1, 'rgba(160,70,20,0)');
     gctx.fillStyle = gg;
     gctx.fillRect(0, 0, 256, 256);
@@ -430,6 +504,29 @@ class App {
     return this.proxyBody || this.body;
   }
 
+  // 見えている空+地面と同じ色分布から IBL 用の環境マップを作る
+  buildSkyEnv(t) {
+    const cv = document.createElement('canvas');
+    cv.width = 128; cv.height = 64; // 正距円筒(上=天頂 下=足元)
+    const ctx = cv.getContext('2d');
+    const mix = (a, b) => new THREE.Color(a).lerp(new THREE.Color(b), t);
+    const g = ctx.createLinearGradient(0, 0, 0, 64);
+    g.addColorStop(0, '#' + mix(SKY.day.top, SKY.night.top).getHexString());
+    g.addColorStop(0.34, '#' + mix(SKY.day.mid, SKY.night.mid).getHexString());
+    g.addColorStop(0.5, '#' + mix(SKY.day.bot, SKY.night.bot).getHexString());
+    // 地平線から下は地面のバウンス光
+    g.addColorStop(0.52, '#' + GROUND_DAY.clone().lerp(GROUND_NIGHT, t).getHexString());
+    g.addColorStop(1, '#' + GROUND_DAY.clone().lerp(GROUND_NIGHT, t).getHexString());
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 64);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const env = this.pmrem.fromEquirectangular(tex).texture;
+    tex.dispose();
+    return env;
+  }
+
   paintSky(t) {
     const ctx = this.skyCanvas.getContext('2d');
     const lerpHex = (a, b) => '#' + new THREE.Color(a).lerp(new THREE.Color(b), t).getHexString();
@@ -590,7 +687,34 @@ class App {
       uDesign: { value: null },
       uPatch: { value: null },
       uDesignSdf: { value: null },
+      // 材質ごとの透過率(反射率とは独立)
+      uTransP: { value: new THREE.Vector3(...T_PAPER) },
+      uTransG: { value: new THREE.Vector3(...T_GOFUN) },
+      uTransS: { value: new THREE.Vector3(...T_SUMI) },
+      uTransB: { value: new THREE.Vector4(PAPER_REF_ALBEDO, TRANS_GAMMA, T_STICKER, INNER_BOUNCE) },
+      uFlame: { value: new THREE.Vector4(0, FLAME_Y, 0, FLAME_R * FLAME_R) },
+      uBodyY: { value: new THREE.Vector2(...PAPER_Y) },
+      uFlameRad: { value: new THREE.Color(0, 0, 0) },
+      uInterior: { value: new THREE.Color(0, 0, 0) },
+      uBounce: { value: new THREE.Color(0, 0, 0) },
     };
+    this.flameColor = new THREE.Color(FLAME_COLOR);
+    this.flameY = FLAME_Y;
+    this.flameFlicker = 1;
+    this.flameGain = 2.5;
+  }
+
+  // 中に入れる灯りの種類。色温度・配光・揺らぎが変わる
+  setLightSource(kind) {
+    this.state.lightSource = kind === 'led' ? 'led' : 'candle';
+    const led = this.state.lightSource === 'led';
+    this.flameColor.set(led ? LED_COLOR : FLAME_COLOR);
+    // 電池灯は面光源に近く、位置も高いので陰影が柔らかく均一になる
+    this.decalU.uTransB.value.w = led ? 0.72 : INNER_BOUNCE;
+    this.flameY = led ? -0.12 : FLAME_Y;
+    this.flameFlicker = led ? 0 : 1;
+    // 相互反射を強く取るぶん総量を下げ、紙面の明るさを揃える
+    this.flameGain = led ? 1.55 : 2.5;
   }
 
   // 文字レイヤー(大きさ / 白縁)の更新。uniform のみ = 即時反映・即時復元。
@@ -627,6 +751,11 @@ class App {
       this.decalU.uDesignSdf.value = sdf;
       this.decalU.uDesignGeoA.value.set(meta.thetaC, meta.yLo, meta.ySpan, meta.rMax);
       this.decalU.uDesignGeoB.value.set(meta.ycN, 1 / meta.texW, 1 / meta.texH, meta.sdfMax || 96);
+      this.decalU.uBodyY.value.set(meta.yLo, meta.yLo + meta.ySpan);
+      // 縁の太さを実寸(mm)で表示するための換算。シーンの単位はメートル
+      const rMean = (meta.rMax || 0.475) * 0.88;
+      this.mmPerTexel = (2 * Math.PI * rMean * (this.glbXform?.scale || 1) * 1000) / meta.texW;
+      this.ui.syncAll();
       this.designReady = true;
       this.setDesignFx({});
       console.info('design layer loaded');
@@ -662,9 +791,9 @@ class App {
         .replace('#include <common>', DECAL_DECL + '\n#include <common>')
         .replace('#include <map_fragment>', '#include <map_fragment>\n' + DECAL_APPLY);
       if (unifiedEmissive) {
-        // 夜の発光にもデカール込みの合成結果を使う(昼夜一致)
+        // 発光は透過光として計算する(材質ごとの透過率 × 内側の照度)
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <emissivemap_fragment>', '\ttotalEmissiveRadiance *= gLanternBase;');
+          .replace('#include <emissivemap_fragment>', EMISSIVE_TRANSMISSION);
       }
     };
     mat.customProgramCacheKey = () => 'chochin-projected-decals';
@@ -858,26 +987,50 @@ class App {
     const m = THREE.MathUtils.smoothstep(this.modeT, 0, 1);
 
     if (Math.abs(this.modeT - prevT) > 0.0015) this.paintSky(m);
+    const wantNightEnv = m > 0.5;
+    if (wantNightEnv !== this.usingNightEnv) {
+      this.usingNightEnv = wantNightEnv;
+      this.scene.environment = wantNightEnv ? this.envNight : this.envDay;
+    }
 
-    // 蝋燭の揺らぎ
-    const flick =
+    // 蝋燭の揺らぎ(電池灯は揺れない)
+    const flick = this.flameFlicker * (
       0.55 * Math.sin(t * 11.0) +
       0.30 * Math.sin(t * 17.3 + 1.7) +
-      0.15 * Math.sin(t * 29.0 + 4.2);
+      0.15 * Math.sin(t * 29.0 + 4.2));
 
-    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(0.98, 0.88, m);
-    this.scene.environmentIntensity = THREE.MathUtils.lerp(0.85, 0.12, m);
-    this.sun.intensity = THREE.MathUtils.lerp(1.9, 0.0, m);
+    // 屋外の直射:天空光は実測でおよそ5:1。従来の1.4:1では立体感が出ず、
+    // 紙が露出オーバーぎみでアルベドの差も潰れていた
+    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(0.88, 0.86, m);
+    this.scene.environmentIntensity = THREE.MathUtils.lerp(0.62, 0.10, m);
+    this.sun.intensity = THREE.MathUtils.lerp(2.7, 0.0, m);
     this.moon.intensity = THREE.MathUtils.lerp(0.0, 0.22, m);
-    this.hemi.intensity = THREE.MathUtils.lerp(0.55, 0.06, m);
+    this.hemi.intensity = THREE.MathUtils.lerp(0.36, 0.06, m);
     this.groundMat.color.copy(GROUND_DAY).lerp(GROUND_NIGHT, m);
     this.scene.fog.color.copy(FOG_DAY).lerp(FOG_NIGHT, m);
     this.starMat.opacity = m * 0.85;
     this.blobShadow.material.opacity = THREE.MathUtils.lerp(0.5, 0.3, m);
 
-    const emiss = m * (1.45 + 0.22 * flick);
-    this.bodyMat.emissiveIntensity = emiss;
+    // 炎の放射。紙(透過率0.40)を通した後の輝度で校正している
+    this.decalU.uFlameRad.value.copy(this.flameColor)
+      .multiplyScalar(m * (this.flameGain + 0.38 * flick));
     this.glowPool.material.opacity = m * (0.36 + 0.07 * flick);
+
+    // 炎は軸上で静止せず数cm揺れる。ホットスポットが動いて陰影が揺らぐ
+    const fl = this.decalU.uFlame.value;
+    fl.x = this.flameFlicker * (0.028 * Math.sin(t * 2.3) + 0.014 * Math.sin(t * 5.1 + 2.0));
+    fl.z = this.flameFlicker * (0.028 * Math.sin(t * 1.9 + 1.1) + 0.014 * Math.sin(t * 4.3));
+    fl.y = this.flameY + 0.012 * flick;
+
+    // 昼の透け: 外光が火袋の内部に作る照度。向こう側の紙を1回通って
+    // 入ってくるので T_PAPER を1回分掛ける(手前の紙でもう1回減衰する)
+    const interior = this.decalU.uInterior.value;
+    interior.copy(this.sun.color).multiplyScalar(this.sun.intensity * CYL_SUNLIT_FRAC);
+    interior.add(this.tmpColor.copy(this.hemi.color).multiplyScalar(this.hemi.intensity));
+    interior.multiplyScalar(T_PAPER[0] / Math.PI);
+
+    // 光る火袋から口輪・弓へのバウンス(実光源はメッシュの穴から漏れるため解析的に)
+    this.decalU.uBounce.value.copy(this.flameColor).multiplyScalar(m * 0.42);
 
     // 選択中デカールの明滅(シェーダー uniform のみ)
     for (const d of this.state.decals) {

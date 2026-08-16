@@ -12,6 +12,7 @@ export function captureState(app) {
     autoRotate: app.state.autoRotate,
     sway: app.state.sway,
     designFx: { ...app.state.designFx },
+    lightSource: app.state.lightSource,
     camera: {
       px: app.camera.position.x, py: app.camera.position.y, pz: app.camera.position.z,
       tx: app.controls.target.x, ty: app.controls.target.y, tz: app.controls.target.z,
@@ -44,6 +45,7 @@ export async function applyState(app, data) {
   app.setAutoRotate(!!data.autoRotate);
   app.setSway(data.sway !== false);
   app.setDesignFx(data.designFx || { scale: 1, outline: false, outlineW: 8 });
+  app.setLightSource(data.lightSource || 'candle');
   app.setMode(data.mode === 'night' ? 'night' : 'day', true);
 
   if (data.camera) {

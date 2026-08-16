@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;600;700&family=Zen+Old+Mincho:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=2026-08-16j">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><ellipse cx='50' cy='52' rx='30' ry='38' fill='%23f3ecd9'/><rect x='34' y='8' width='32' height='10' rx='2' fill='%23111'/><rect x='34' y='84' width='32' height='10' rx='2' fill='%23111'/></svg>">
 <script type="importmap">
 {
@@ -147,10 +147,20 @@
         <button data-q="high">高</button>
       </div>
     </div>
+    <div class="row">
+      <span>灯り</span>
+      <div class="seg" id="segLight">
+        <button data-l="candle" class="active">ろうそく</button>
+        <button data-l="led">電池灯(LED)</button>
+      </div>
+    </div>
+    <p class="panel-note">ろうそくは約1900K・炎が揺れて下寄りが明るく、電池灯は約2700Kで全体が均一に光ります。夜の見え方が変わるので、実際に使う灯りを選んでください。</p>
+
     <h2 class="panel-title" style="margin-top: 18px;">文字の調整</h2>
-    <p class="panel-note">「吉」の文字の大きさを変えたり、白い縁取りを付けられます。大きさ100%・縁取りオフに戻せば、完全に元の見た目に戻ります。</p>
+    <p class="panel-note">「吉」の文字の大きさを変えたり、白い縁取りを付けられます。大きさ100%・縁取りオフに戻せば、完全に元の見た目に戻ります。<br>
+      <small>白縁は胡粉(白の顔料)を置く仕上げを想定しています。顔料は光を通しにくいため、<b>昼は紙より白く映え、夜は逆に紙より暗い輪</b>になります(実物と同じ挙動)。</small></p>
     <div class="slider-row">
-      <span>大きさ</span>
+      <span>大きさ<b id="designScaleVal" class="slider-val">100%</b></span>
       <input type="range" id="designScale" min="0.50" max="1.15" step="0.01" value="1">
     </div>
     <label class="row switch-row">
@@ -159,7 +169,7 @@
       <span class="switch"></span>
     </label>
     <div class="slider-row">
-      <span>縁の太さ</span>
+      <span>縁の太さ<b id="designOutlineWVal" class="slider-val">約 3.7 mm</b></span>
       <input type="range" id="designOutlineW" min="2" max="30" step="0.5" value="8">
     </div>
     <button id="btnResetCam" class="btn ghost wide">カメラをリセット</button>
@@ -221,6 +231,6 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script type="module" src="js/main.js?v=2026-08-16g"></script>
+<script type="module" src="js/main.js?v=2026-08-16j"></script>
 </body>
 </html>
