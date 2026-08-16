@@ -17,10 +17,10 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 // 注意: JS更新時は index.html の main.js の ?v= と、この4つの ?v= を揃えて上げる
 // (GitHub Pages のキャッシュでモジュールだけ古くなる事故を防ぐ)
-import { LanternTextures } from './textures.js?v=2026-08-16j';
-import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-16j';
-import { UI } from './ui.js?v=2026-08-16j';
-import { applyState, decodeShareHash } from './presets.js?v=2026-08-16j';
+import { LanternTextures } from './textures.js?v=2026-08-16k';
+import { buildLantern, TOTAL_H, BODY_R } from './lantern.js?v=2026-08-16k';
+import { UI } from './ui.js?v=2026-08-16k';
+import { applyState, decodeShareHash } from './presets.js?v=2026-08-16k';
 
 // ---------- 色定義(昼 / 夜) ----------
 const SKY = {
@@ -39,7 +39,7 @@ const INITIAL_ROT_Y = Math.PI;  // 文様が正面を向く回転(プロシー�
 const GLB_FRONT_ROT = Math.PI;  // GLB の正面補正(生成モデルごとに要調整)
 // モデル更新時は ASSET_VER を上げる(GitHub Pages のキャッシュ対策)
 const ASSET_VER = '2026-08-15c';
-const DESIGN_VER = '2026-08-16j'; // 文字レイヤー(design*.png/json)を更新したらここを上げる
+const DESIGN_VER = '2026-08-16k'; // 文字レイヤー(design*.png/json)を更新したらここを上げる
 const GLB_PATH = `assets/lantern.glb?v=${ASSET_VER}`;
 const PROXY_PATH = `assets/lantern-proxy.glb?v=${ASSET_VER}`; // レイキャスト用の軽量メッシュ
 

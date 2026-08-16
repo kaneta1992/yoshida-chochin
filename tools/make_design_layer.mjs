@@ -182,9 +182,11 @@ function sampleAlbedo(u, v) {
   }
   return out;
 }
+const albC = new Float32Array(DW * DH * 3); // 円筒空間のアルベド(紙の移植元)
 for (let di = 0; di < DW * DH; di++) {
   if (!covD[di]) continue;
   const [r, g, b] = sampleAlbedo(uBuf[di], vBuf[di]);
+  albC[di * 3] = r; albC[di * 3 + 1] = g; albC[di * 3 + 2] = b;
   const lum = r * 0.299 + g * 0.587 + b * 0.114;
   const a = Math.max(0, Math.min(1, (175 - lum) / 80));
   aSum[di] += a; aCnt[di]++;
@@ -291,72 +293,140 @@ for (let i = 0; i < DW * DH; i++) {
 }
 console.log('sdf: rMean', rMean.toFixed(3), 'wy', wy.toFixed(3), 'max', SDF_MAX);
 
-// ---------- 紙パッチ: 行ごとに θ 方向へ補間(骨の縞を保つ) ----------
+// ---------- 紙パッチ: 同じ行の実物の紙を移植し、階調は勾配ドメインで合わせる ----------
+// 提灯は回転体で骨の縞が水平なので、同じ高さ(=同じ行)の別の角度にある「文字が
+// 無い紙」は骨も繊維も統計的に同一。そこから実画素を移植して穴を埋め、低周波
+// (階調)だけをラプラス方程式(境界=周囲の実際の紙)の解に差し替える。
+// 直線補間だとのっぺりした平面になり、夜は透過が濃度の1.8乗で効くため
+// わずかな色ズレが「文字のゴースト」として残ってしまう。
 const patch = await Jimp.create(DW, DH, 0x00000000);
 const pd = patch.bitmap.data;
-// 平均紙色マップ
-const paper = new Float64Array(DW * DH * 3);
-const havePaper = new Uint8Array(DW * DH);
+
+// 1) 穴 = 文字を確実に覆う領域。かすれ(薄い墨)も取りこぼさない
+const glyphCore = fillHoles(inkMask, DW, DH);
+const holeNear = dilate(glyphCore, DW, DH, 14);
+const holeFar = dilate(glyphCore, DW, DH, 48);
+const hole = new Uint8Array(DW * DH);
 for (let i = 0; i < DW * DH; i++) {
-  if (pCnt[i]) {
-    paper[i * 3] = pSum[i * 3] / pCnt[i];
-    paper[i * 3 + 1] = pSum[i * 3 + 1] / pCnt[i];
-    paper[i * 3 + 2] = pSum[i * 3 + 2] / pCnt[i];
-    havePaper[i] = 1;
-  }
+  hole[i] = (holeNear[i] || (holeFar[i] && aAvg[i] > 0.03)) ? 1 : 0;
 }
-// 各行: 紙が無いセルを左右(θ、wrap)の最近傍紙色で線形補間
-for (let ry = 0; ry < DH; ry++) {
-  const row = ry * DW;
-  let anyPaper = false;
-  for (let x = 0; x < DW; x++) if (havePaper[row + x]) { anyPaper = true; break; }
-  if (!anyPaper) continue;
+
+// 2) 同じ行の使える紙をミラータイルで敷き詰める(骨の縞と繊維がそのまま乗る)
+const donor = Float32Array.from(albC);
+const mirrorIdx = (t, L) => {
+  if (L <= 1) return 0;
+  const p = ((t % (2 * L)) + 2 * L) % (2 * L);
+  return p < L ? p : 2 * L - 1 - p;
+};
+let rowsPatched = 0, rowsFailed = 0;
+for (let y = 0; y < DH; y++) {
+  const row = y * DW;
+  let hasHole = false;
+  for (let x = 0; x < DW; x++) if (hole[row + x]) { hasHole = true; break; }
+  if (!hasHole) continue;
+  // この行で移植元に使える x(覆われていて・穴でなく・墨でもない)
+  const usable = new Uint8Array(DW);
   for (let x = 0; x < DW; x++) {
-    if (havePaper[row + x]) continue;
-    let l = x, dl = 0, rr = x, dr = 0;
-    while (!havePaper[row + ((l % DW) + DW) % DW] && dl < DW) { l--; dl++; }
-    while (!havePaper[row + rr % DW] && dr < DW) { rr++; dr++; }
-    const li = row + ((l % DW) + DW) % DW, ri = row + rr % DW;
-    const t = dl + dr > 0 ? dl / (dl + dr) : 0;
-    for (let c = 0; c < 3; c++) {
-      paper[(row + x) * 3 + c] = paper[li * 3 + c] * (1 - t) + paper[ri * 3 + c] * t;
-    }
+    const i = row + x;
+    usable[x] = covD[i] && !hole[i] && aAvg[i] < 0.03 ? 1 : 0;
+  }
+  // 最長の連続区間を探す(θ方向はラップするので2周スキャン)
+  let bestStart = -1, bestLen = 0, runStart = -1, runLen = 0;
+  for (let k = 0; k < DW * 2; k++) {
+    const x = k % DW;
+    if (usable[x]) {
+      if (runLen === 0) runStart = x;
+      runLen++;
+      if (runLen > bestLen && runLen <= DW) { bestLen = runLen; bestStart = runStart; }
+    } else { runLen = 0; }
+  }
+  if (bestLen < 24) { rowsFailed++; continue; }
+  rowsPatched++;
+  for (let x = 0; x < DW; x++) {
+    if (!hole[row + x]) continue;
+    const sx = (bestStart + mirrorIdx(x - bestStart, bestLen)) % DW;
+    const si = row + ((sx % DW) + DW) % DW;
+    for (let c = 0; c < 3; c++) donor[(row + x) * 3 + c] = albC[si * 3 + c];
   }
 }
-// θ方向のみぼかして紙色のまだら(影の混入)を平滑化(骨の縞=行方向は保つ)
-{
-  const R = 6;
-  const tmp = new Float64Array(DW * 3);
-  for (let ry = 0; ry < DH; ry++) {
-    const row = ry * DW;
-    for (let x = 0; x < DW; x++) {
-      let sr = 0, sg = 0, sb = 0;
-      for (let dx = -R; dx <= R; dx++) {
-        const j = row + ((x + dx + DW) % DW);
-        sr += paper[j * 3]; sg += paper[j * 3 + 1]; sb += paper[j * 3 + 2];
+console.log('patch rows: filled', rowsPatched, ' skipped', rowsFailed);
+
+// 3) 低周波(階調)はラプラス方程式の解に差し替える。境界が周囲の紙と一致するので
+//    段差が原理的に出ない。滑らかな場なので1/8解像度で解けば十分
+const SC = 8, CW = Math.ceil(DW / SC), CH = Math.ceil(DH / SC);
+const nC = CW * CH;
+const refSum = new Float64Array(nC * 3), refCnt = new Uint32Array(nC);
+const donSum = new Float64Array(nC * 3), donCnt = new Uint32Array(nC);
+const holeCnt = new Uint32Array(nC), allCnt = new Uint32Array(nC);
+for (let y = 0; y < DH; y++) {
+  for (let x = 0; x < DW; x++) {
+    const i = y * DW + x, ci = ((y / SC) | 0) * CW + ((x / SC) | 0);
+    allCnt[ci]++;
+    if (hole[i]) holeCnt[ci]++;
+    else if (covD[i] && aAvg[i] < 0.03) {
+      for (let c = 0; c < 3; c++) refSum[ci * 3 + c] += albC[i * 3 + c];
+      refCnt[ci]++;
+    }
+    for (let c = 0; c < 3; c++) donSum[ci * 3 + c] += donor[i * 3 + c];
+    donCnt[ci]++;
+  }
+}
+const u = new Float64Array(nC * 3);
+const fixed = new Uint8Array(nC);
+let gr = 0, gg = 0, gb = 0, gn = 0;
+for (let ci = 0; ci < nC; ci++) {
+  if (refCnt[ci] > allCnt[ci] * 0.5 && holeCnt[ci] < allCnt[ci] * 0.35) {
+    fixed[ci] = 1;
+    for (let c = 0; c < 3; c++) u[ci * 3 + c] = refSum[ci * 3 + c] / refCnt[ci];
+    gr += u[ci * 3]; gg += u[ci * 3 + 1]; gb += u[ci * 3 + 2]; gn++;
+  }
+}
+for (let ci = 0; ci < nC; ci++) {
+  if (fixed[ci]) continue;
+  u[ci * 3] = gr / gn; u[ci * 3 + 1] = gg / gn; u[ci * 3 + 2] = gb / gn;
+}
+for (let it = 0; it < 3000; it++) {
+  for (let y = 0; y < CH; y++) {
+    for (let x = 0; x < CW; x++) {
+      const ci = y * CW + x;
+      if (fixed[ci]) continue;
+      const xl = (x - 1 + CW) % CW, xr = (x + 1) % CW;
+      const yu = Math.max(0, y - 1), yd = Math.min(CH - 1, y + 1);
+      for (let c = 0; c < 3; c++) {
+        u[ci * 3 + c] = 0.25 * (
+          u[(y * CW + xl) * 3 + c] + u[(y * CW + xr) * 3 + c] +
+          u[(yu * CW + x) * 3 + c] + u[(yd * CW + x) * 3 + c]);
       }
-      tmp[x * 3] = sr / (2 * R + 1); tmp[x * 3 + 1] = sg / (2 * R + 1); tmp[x * 3 + 2] = sb / (2 * R + 1);
-    }
-    for (let x = 0; x < DW; x++) {
-      paper[(row + x) * 3] = tmp[x * 3];
-      paper[(row + x) * 3 + 1] = tmp[x * 3 + 1];
-      paper[(row + x) * 3 + 2] = tmp[x * 3 + 2];
     }
   }
 }
-// パッチ = 文字レイヤーが描き直す全域(連続αを含む)を消去できる範囲に紙色を出力
-const eraseMask = new Uint8Array(DW * DH);
-for (let i = 0; i < DW * DH; i++) {
-  if (support[i] && aAvg[i] > 0.04) eraseMask[i] = 1;
+// 移植した紙の低周波(これを引いて高周波=骨と繊維だけを残す)
+const donLow = new Float64Array(nC * 3);
+for (let ci = 0; ci < nC; ci++) {
+  for (let c = 0; c < 3; c++) donLow[ci * 3 + c] = donSum[ci * 3 + c] / donCnt[ci];
 }
-const patchMask = dilate(eraseMask, DW, DH, 2);
-const patchSoft = blurU8(Uint8Array.from(patchMask, (v) => v * 255), DW, DH, 1);
+blurCoarse(donLow, CW, CH, 5);
+
+// 4) 出力 = ラプラス解(階調) + 移植した紙の高周波(骨・繊維)
+const sampleC = (arr, x, y, c) => {
+  const fx = x / SC - 0.5, fy = y / SC - 0.5;
+  const x0 = Math.floor(fx), y0 = Math.max(0, Math.min(CH - 1, Math.floor(fy)));
+  const tx = fx - x0, ty = Math.max(0, Math.min(1, fy - y0));
+  const y1 = Math.min(CH - 1, y0 + 1);
+  const xa = ((x0 % CW) + CW) % CW, xb = ((x0 + 1) % CW + CW) % CW;
+  return (arr[(y0 * CW + xa) * 3 + c] * (1 - tx) + arr[(y0 * CW + xb) * 3 + c] * tx) * (1 - ty)
+       + (arr[(y1 * CW + xa) * 3 + c] * (1 - tx) + arr[(y1 * CW + xb) * 3 + c] * tx) * ty;
+};
+const patchSoft = blurU8(Uint8Array.from(hole, (v) => v * 255), DW, DH, 2);
 for (let i = 0; i < DW * DH; i++) {
-  if (!patchSoft[i]) continue;
-  pd[i * 4] = paper[i * 3];
-  pd[i * 4 + 1] = paper[i * 3 + 1];
-  pd[i * 4 + 2] = paper[i * 3 + 2];
-  pd[i * 4 + 3] = patchSoft[i];
+  const a = hole[i] ? 255 : patchSoft[i];
+  if (!a) continue;
+  const x = i % DW, y = (i / DW) | 0;
+  for (let c = 0; c < 3; c++) {
+    const detail = donor[i * 3 + c] - sampleC(donLow, x, y, c);
+    pd[i * 4 + c] = Math.max(0, Math.min(255, sampleC(u, x, y, c) + detail));
+  }
+  pd[i * 4 + 3] = a;
 }
 
 // ---------- メタ情報(スケール中心 = マスクの重心) ----------
@@ -407,6 +477,27 @@ function dilate(mask, w, h, r) {
     m = n;
   }
   return m;
+}
+
+// 粗いグリッドを箱ぼかし(θ方向はラップ)
+function blurCoarse(arr, w, h, r) {
+  const out = new Float64Array(arr.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 3;
+      let n = 0, s0 = 0, s1 = 0, s2 = 0;
+      for (let dy = -r; dy <= r; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -r; dx <= r; dx++) {
+          const j = (yy * w + ((x + dx + w) % w)) * 3;
+          s0 += arr[j]; s1 += arr[j + 1]; s2 += arr[j + 2]; n++;
+        }
+      }
+      out[o] = s0 / n; out[o + 1] = s1 / n; out[o + 2] = s2 / n;
+    }
+  }
+  arr.set(out);
 }
 
 function blurU8(src, w, h, r) {
